@@ -1,0 +1,13 @@
+# Kaggle datasets
+raw/
+processed/
+*.csv
+*.json
+kaggle.json
+
+# Keep directory structure
+!README.md
+!download-dataset.js
+!process-dataset.js
+!dataset-loader.js
+

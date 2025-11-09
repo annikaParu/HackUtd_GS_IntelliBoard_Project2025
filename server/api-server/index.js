@@ -11,6 +11,8 @@ import { db, addActivity } from "./memorydb.js";
 import { extractTextFromUpload } from "./text-extract.js";
 import { llmExtractFieldsJSON, llmExtractFieldsJSONLegacy, llmAnswer, isOpenAIReady, llmAnalyzeRisk } from "./llm.js";
 import { checkWatchlist } from "./watchlist.js";
+import { analyzeDocumentPrivacy, maskExtractedFields } from "./privacy.js";
+import { loadProcessedDatasets, getTrainingData, getBenchmarkDataset, seedDatabaseWithDataset } from "./datasets/dataset-loader.js";
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -22,12 +24,67 @@ app.get("/", (_, res) => res.send("IntelliBoard API ✅"));
 
 // Health endpoint with status
 app.get("/health", (req, res) => {
+  const datasets = loadProcessedDatasets();
   res.json({ 
     status: "ok", 
     message: "IntelliBoard API ✅",
     openaiAvailable: isOpenAIReady(),
+    datasetsLoaded: datasets.length,
     timestamp: new Date().toISOString()
   });
+});
+
+// GET /datasets/training - Get training data from processed datasets
+app.get("/datasets/training", (req, res) => {
+  try {
+    const { limit, withRiskScores, shuffle } = req.query;
+    const trainingData = getTrainingData({
+      limit: limit ? parseInt(limit) : null,
+      withRiskScores: withRiskScores === 'true',
+      shuffle: shuffle === 'true'
+    });
+    
+    res.json({
+      count: trainingData.length,
+      data: trainingData
+    });
+  } catch (error) {
+    console.error("Error getting training data:", error);
+    res.status(500).json({ error: "Failed to load training data", message: error.message });
+  }
+});
+
+// GET /datasets/benchmark - Get benchmark dataset for testing
+app.get("/datasets/benchmark", (req, res) => {
+  try {
+    const size = parseInt(req.query.size) || 100;
+    const benchmark = getBenchmarkDataset(size);
+    
+    res.json({
+      count: benchmark.length,
+      data: benchmark
+    });
+  } catch (error) {
+    console.error("Error getting benchmark data:", error);
+    res.status(500).json({ error: "Failed to load benchmark data", message: error.message });
+  }
+});
+
+// POST /datasets/seed - Seed database with dataset vendors
+app.post("/datasets/seed", (req, res) => {
+  try {
+    const { limit } = req.body || {};
+    const count = seedDatabaseWithDataset(db, limit || 50);
+    
+    res.json({
+      success: true,
+      vendorsAdded: count,
+      message: `Seeded database with ${count} vendors from dataset`
+    });
+  } catch (error) {
+    console.error("Error seeding database:", error);
+    res.status(500).json({ error: "Failed to seed database", message: error.message });
+  }
 });
 
 // Legacy endpoints (keep for backward compatibility)
@@ -103,6 +160,11 @@ app.post("/extract", upload.single("file"), async (req, res) => {
       at: new Date().toISOString()
     });
 
+    // Privacy Analysis - Detect PII in document
+    console.log(`🔒 Analyzing document for PII...`);
+    const privacyAnalysis = analyzeDocumentPrivacy(text);
+    console.log(`🔒 Privacy analysis: ${privacyAnalysis.hasPII ? `PII detected (${privacyAnalysis.piiCount} instances)` : 'No PII detected'}`);
+
     // Extract fields using LLM (works offline, escalates to OpenAI if available)
     console.log(`🤖 Extracting fields using ${isOpenAIReady() ? "OpenAI" : "offline regex"}...`);
     const extracted = await llmExtractFieldsJSON(text);
@@ -121,6 +183,9 @@ app.post("/extract", upload.single("file"), async (req, res) => {
       entityType: extracted.entityType || extracted.type || ""
     };
 
+    // Mask PII in extracted fields
+    const maskedResult = maskExtractedFields(normalizedExtracted);
+
     addActivity({
       actor: "system",
       type: "extract",
@@ -136,7 +201,17 @@ app.post("/extract", upload.single("file"), async (req, res) => {
     res.json({
       fileId,
       filename: req.file.originalname,
-      extracted: normalizedExtracted
+      extracted: normalizedExtracted,
+      extractedMasked: maskedResult.maskedFields,
+      documentText: text,
+      privacy: {
+        hasPII: privacyAnalysis.hasPII,
+        riskLevel: privacyAnalysis.riskLevel,
+        detectedTypes: privacyAnalysis.detectedTypes,
+        piiCount: privacyAnalysis.piiCount,
+        recommendations: privacyAnalysis.recommendations,
+        fieldsWithPII: maskedResult.piiDetected
+      }
     });
   } catch (e) {
     console.error("❌ Extract error:", e);

@@ -10,6 +10,15 @@ interface ExtractedFields {
   entityType: string
 }
 
+interface PrivacyAnalysis {
+  hasPII: boolean
+  riskLevel: 'low' | 'medium' | 'high'
+  detectedTypes: string[]
+  piiCount: number
+  recommendations: string[]
+  fieldsWithPII?: Array<{ field: string; types: string[]; count: number }>
+}
+
 interface RiskResult {
   score: number
   band: string
@@ -55,6 +64,7 @@ function App() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [extracted, setExtracted] = useState<ExtractedFields | null>(null)
   const [riskResult, setRiskResult] = useState<RiskResult | null>(null)
+  const [privacyAnalysis, setPrivacyAnalysis] = useState<PrivacyAnalysis | null>(null)
   const [loading, setLoading] = useState(false)
   const [activities, setActivities] = useState<ActivityEvent[]>([])
   const [vendors, setVendors] = useState<Vendor[]>([])
@@ -158,6 +168,15 @@ function App() {
       }
 
       setExtracted(extracted)
+      
+      // Set privacy analysis if available
+      if (data.privacy) {
+        setPrivacyAnalysis(data.privacy)
+        if (data.privacy.hasPII) {
+          console.log(`🔒 PII detected: ${data.privacy.piiCount} instances (${data.privacy.detectedTypes.join(', ')})`)
+        }
+      }
+      
       // Use business name if found, otherwise use filename without extension
       const fileName = file.name.replace(/\.[^/.]+$/, '')
       setVendorName(extracted.businessName || fileName || 'AI Manager')
@@ -245,6 +264,7 @@ function App() {
     setUploadedFile(null)
     setExtracted(null)
     setRiskResult(null)
+    setPrivacyAnalysis(null)
     setError(null)
     setActiveTab('Draft')
     setVendorName('AI Manager')
@@ -727,6 +747,65 @@ function App() {
                     </div>
                   </div>
                 </div>
+
+                {privacyAnalysis && (
+                  <div className="card">
+                    <h4 className="compliance-section-title">🔒 Privacy & PII Analysis</h4>
+                    <div className="privacy-analysis">
+                      <div className={`privacy-status-badge ${privacyAnalysis.riskLevel}`}>
+                        <span className="privacy-icon">
+                          {privacyAnalysis.hasPII ? (privacyAnalysis.riskLevel === 'high' ? '🚨' : privacyAnalysis.riskLevel === 'medium' ? '⚠️' : '🔒') : '✅'}
+                        </span>
+                        <span className="privacy-status-text">
+                          {privacyAnalysis.hasPII 
+                            ? `PII Detected (${privacyAnalysis.riskLevel.toUpperCase()} Risk)`
+                            : 'No PII Detected'}
+                        </span>
+                      </div>
+                      
+                      {privacyAnalysis.hasPII && (
+                        <>
+                          <div className="privacy-details">
+                            <div className="privacy-detail-item">
+                              <span className="privacy-detail-label">PII Instances:</span>
+                              <span className="privacy-detail-value">{privacyAnalysis.piiCount}</span>
+                            </div>
+                            <div className="privacy-detail-item">
+                              <span className="privacy-detail-label">Detected Types:</span>
+                              <div className="privacy-types-list">
+                                {privacyAnalysis.detectedTypes.map((type, idx) => (
+                                  <span key={idx} className="privacy-type-badge">{type}</span>
+                                ))}
+                              </div>
+                            </div>
+                            {privacyAnalysis.fieldsWithPII && privacyAnalysis.fieldsWithPII.length > 0 && (
+                              <div className="privacy-detail-item">
+                                <span className="privacy-detail-label">Fields with PII:</span>
+                                <div className="privacy-fields-list">
+                                  {privacyAnalysis.fieldsWithPII.map((field, idx) => (
+                                    <div key={idx} className="privacy-field-item">
+                                      <span className="privacy-field-name">{field.field}</span>
+                                      <span className="privacy-field-types">{field.types.join(', ')}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          
+                          <div className="privacy-recommendations">
+                            <h5 className="privacy-recommendations-title">Recommendations:</h5>
+                            <ul className="privacy-recommendations-list">
+                              {privacyAnalysis.recommendations.map((rec, idx) => (
+                                <li key={idx}>{rec}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <div className="card">
                   <h4 className="compliance-section-title">🔍 Detailed Compliance Checks</h4>
