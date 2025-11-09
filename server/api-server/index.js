@@ -9,7 +9,8 @@ import { nanoid } from "nanoid";
 import { scoreVendor, explainVendor, scoreRisk } from "./risk.js";
 import { db, addActivity } from "./memorydb.js";
 import { extractTextFromUpload } from "./text-extract.js";
-import { llmExtractFieldsJSON, llmExtractFieldsJSONLegacy, llmAnswer, isOpenAIReady } from "./llm.js";
+import { llmExtractFieldsJSON, llmExtractFieldsJSONLegacy, llmAnswer, isOpenAIReady, llmAnalyzeRisk } from "./llm.js";
+import { checkWatchlist } from "./watchlist.js";
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -147,14 +148,52 @@ app.post("/extract", upload.single("file"), async (req, res) => {
 });
 
 // POST /risk/score - Calculate risk score for extracted fields
+// PRIMARY METHOD: Uses LLM algorithmic analysis (if OpenAI available)
+// FALLBACK: Rule-based scoring (only if OpenAI unavailable)
 app.post("/risk/score", async (req, res) => {
   try {
-    const { fields } = req.body || {};
+    const { fields, documentText } = req.body || {};
     if (!fields) {
       return res.status(400).json({ error: "fields required" });
     }
 
-    const result = scoreRisk(fields);
+    // Get watchlist information to pass to LLM
+    const watchlistInfo = checkWatchlist(fields.businessName);
+
+    // PRIMARY METHOD: Use LLM algorithmic risk analysis if OpenAI is available
+    let result = null;
+    const openaiReady = isOpenAIReady();
+    
+    if (openaiReady) {
+      console.log("🤖 Using AI-powered algorithmic risk analysis (primary method)...");
+      console.log("   Vendor:", fields.businessName || "Unknown");
+      try {
+        result = await llmAnalyzeRisk(fields, documentText, watchlistInfo);
+        if (result) {
+          console.log(`✅ AI risk analysis complete: Score ${result.score}, Band ${result.band}`);
+          console.log(`   Method: AI Algorithmic`);
+        } else {
+          console.warn("⚠️  LLM returned null result");
+        }
+      } catch (llmError) {
+        console.error("❌ LLM risk analysis error:", llmError.message);
+        console.error("   Stack:", llmError.stack);
+        // Will fall through to rule-based
+      }
+    } else {
+      console.log("⚠️  OpenAI not available - cannot use AI risk analysis");
+    }
+
+    // FALLBACK ONLY: Use rule-based scoring if OpenAI not available or failed
+    if (!result) {
+      console.log("📊 Using rule-based risk scoring (fallback method)...");
+      result = scoreRisk(fields);
+      result.method = "rule-based";
+      console.log(`📊 Rule-based score: ${result.score}, Band: ${result.band}`);
+      console.log("   ⚠️  To use AI-powered scoring, set a valid OPENAI_API_KEY in .env");
+    } else {
+      result.method = "ai-algorithmic";
+    }
 
     addActivity({
       actor: "system",
@@ -163,7 +202,8 @@ app.post("/risk/score", async (req, res) => {
       payload: { 
         score: result.score, 
         band: result.band,
-        businessName: fields.businessName 
+        businessName: fields.businessName,
+        method: result.method || "rule-based"
       },
       at: new Date().toISOString()
     });

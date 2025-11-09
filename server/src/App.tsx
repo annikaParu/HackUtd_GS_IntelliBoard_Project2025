@@ -47,7 +47,7 @@ interface Vendor {
   }
 }
 
-type View = 'home' | 'vendors' | 'compliance' | 'settings'
+type View = 'home' | 'vendors' | 'flagged' | 'approved' | 'compliance' | 'settings'
 
 function App() {
   const [currentView, setCurrentView] = useState<View>('home')
@@ -58,10 +58,29 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [activities, setActivities] = useState<ActivityEvent[]>([])
   const [vendors, setVendors] = useState<Vendor[]>([])
-  const [vendorName, setVendorName] = useState('Acme Technologies Inc')
+  const [vendorName, setVendorName] = useState('AI Manager')
+  const [entityType, setEntityType] = useState<'vendor' | 'client'>('vendor')
   const [error, setError] = useState<string | null>(null)
   const [sidebarExpanded, setSidebarExpanded] = useState(false)
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null)
+  const [flaggedVendors, setFlaggedVendors] = useState<Array<{
+    id: string
+    extracted: ExtractedFields
+    riskResult: RiskResult
+    flaggedAt: string
+    vendorName: string
+    entityType: 'vendor' | 'client'
+  }>>([])
+  const [approvedVendors, setApprovedVendors] = useState<Array<{
+    id: string
+    extracted: ExtractedFields
+    riskResult: RiskResult
+    approvedAt: string
+    vendorName: string
+    entityType: 'vendor' | 'client'
+    lifecyclePhase: string
+  }>>([])
+  const [selectedApprovedVendor, setSelectedApprovedVendor] = useState<typeof approvedVendors[0] | null>(null)
 
   // Fetch activities and vendors
   useEffect(() => {
@@ -139,10 +158,36 @@ function App() {
       }
 
       setExtracted(extracted)
-      setVendorName(extracted.businessName || 'Acme Technologies Inc')
+      // Use business name if found, otherwise use filename without extension
+      const fileName = file.name.replace(/\.[^/.]+$/, '')
+      setVendorName(extracted.businessName || fileName || 'AI Manager')
       
       // Show success message
       console.log('✅ Fields extracted:', extracted)
+      
+      // Automatically calculate risk score after extraction
+      console.log('🤖 Automatically calculating risk score...')
+      try {
+        const riskRes = await fetch(`${API_URL}/risk/score`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fields: extracted })
+        })
+
+        if (riskRes.ok) {
+          const riskData = await riskRes.json()
+          setRiskResult(riskData)
+          console.log('✅ Risk score calculated:', riskData)
+        } else {
+          console.warn('⚠️ Risk scoring failed, but extraction succeeded')
+        }
+      } catch (riskError) {
+        console.error('❌ Risk scoring error:', riskError)
+        // Don't fail the whole upload if risk scoring fails
+      }
+      
+      // Automatically switch to AI Review tab
+      setActiveTab('AI Review')
       
       // Refresh data
       const activityRes = await fetch(`${API_URL}/activity`)
@@ -155,31 +200,32 @@ function App() {
       setError(error.message || 'Failed to extract document. Please ensure the file is a valid PDF with extractable text.')
       setUploadedFile(null)
       setExtracted(null)
+      setRiskResult(null)
     } finally {
       setLoading(false)
     }
   }
 
   const handleApprove = async () => {
-    if (!extracted) return
+    if (!extracted || !riskResult) return
 
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${API_URL}/risk/score`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: extracted })
-      })
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}))
-        throw new Error(errorData.message || 'Risk scoring failed')
+      const approvedVendor = {
+        id: `approved-${Date.now()}`,
+        extracted: { ...extracted },
+        riskResult: { ...riskResult },
+        approvedAt: new Date().toISOString(),
+        vendorName: extracted.businessName || vendorName,
+        entityType: entityType,
+        lifecyclePhase: 'contract-negotiation' // Start at first phase
       }
 
-      const data = await res.json()
-      setRiskResult(data)
-      setActiveTab('AI Review')
+      setApprovedVendors([...approvedVendors, approvedVendor])
+      setCurrentView('approved')
+      
+      console.log('✅ Vendor approved:', approvedVendor.vendorName)
       
       // Refresh data
       const activityRes = await fetch(`${API_URL}/activity`)
@@ -188,11 +234,47 @@ function App() {
         setActivities(activityData)
       }
     } catch (error: any) {
-      console.error('Risk score error:', error)
-      setError(error.message || 'Failed to calculate risk score.')
+      console.error('Approve error:', error)
+      setError(error.message || 'Failed to approve vendor.')
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleRemoveFile = () => {
+    setUploadedFile(null)
+    setExtracted(null)
+    setRiskResult(null)
+    setError(null)
+    setActiveTab('Draft')
+    setVendorName('AI Manager')
+    // Reset file input
+    const fileInput = document.getElementById('file-upload') as HTMLInputElement
+    if (fileInput) {
+      fileInput.value = ''
+    }
+  }
+
+  const handleFlagVendor = () => {
+    if (!extracted || !riskResult) {
+      setError('Please upload and analyze a document before flagging')
+      return
+    }
+
+    const flaggedVendor = {
+      id: `flagged-${Date.now()}`,
+      extracted: { ...extracted },
+      riskResult: { ...riskResult },
+      flaggedAt: new Date().toISOString(),
+      vendorName: extracted.businessName || vendorName,
+      entityType: entityType
+    }
+
+    setFlaggedVendors([...flaggedVendors, flaggedVendor])
+    setCurrentView('flagged')
+    
+    // Add activity
+    console.log('✅ Vendor flagged:', flaggedVendor.vendorName)
   }
 
   const handleFieldChange = (field: keyof ExtractedFields, value: string) => {
@@ -236,13 +318,29 @@ function App() {
   const renderHomeView = () => (
     <>
       <div className="vendor-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
         <h2 className="vendor-title">{vendorName}</h2>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button 
+              className={`entity-toggle-btn ${entityType === 'vendor' ? 'active' : ''}`}
+              onClick={() => setEntityType('vendor')}
+            >
+              🏢 Vendor
+            </button>
+            <button 
+              className={`entity-toggle-btn ${entityType === 'client' ? 'active' : ''}`}
+              onClick={() => setEntityType('client')}
+            >
+              👤 Client
+            </button>
+          </div>
+        </div>
         <button className="smarter-trust-btn">Smarter Trust</button>
       </div>
 
       {/* Tabs */}
       <div className="tabs">
-        {['Draft', 'AI Review', 'Compliance Check', 'Approved'].map(tab => (
+        {['Draft', 'AI Review', 'Compliance Check'].map(tab => (
           <button
             key={tab}
             className={`tab ${activeTab === tab ? 'active' : ''}`}
@@ -270,6 +368,13 @@ function App() {
                   <div className="doc-name">{uploadedFile.name}</div>
                   <div className="doc-status">Uploaded</div>
                 </div>
+                <button 
+                  className="btn-remove"
+                  onClick={handleRemoveFile}
+                  title="Remove file and start over"
+                >
+                  ✕ Remove
+                </button>
               </div>
             ) : (
               <div className="upload-area">
@@ -337,13 +442,23 @@ function App() {
             )}
 
             <div className="action-buttons">
-              <button className="btn-flag">Flag Vendor</button>
+              {uploadedFile && (
+                <button 
+                  className="btn-remove"
+                  onClick={handleRemoveFile}
+                >
+                  ✕ Remove File
+                </button>
+              )}
+              <button className="btn-flag" onClick={handleFlagVendor} disabled={!extracted || !riskResult}>
+                Flag Vendor
+              </button>
               <button
                 className="btn-approve"
                 onClick={handleApprove}
-                disabled={!extracted || loading}
+                disabled={!extracted || !riskResult || loading}
               >
-                {loading ? 'Processing...' : 'Approve'}
+                {loading ? 'Processing...' : 'Approve & Proceed'}
         </button>
             </div>
           </div>
@@ -352,19 +467,21 @@ function App() {
 
       {activeTab === 'AI Review' && (
         <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
           <h3 className="section-title">AI Review Results</h3>
+            {uploadedFile && (
+              <button 
+                className="btn-remove"
+                onClick={handleRemoveFile}
+                title="Remove file and start over"
+              >
+                ✕ Remove File / Start Over
+              </button>
+            )}
+          </div>
           {riskResult ? (
             <div className="review-content">
               <div className="review-summary">
-                <div className="review-score">
-                  <span className="score-label">Risk Score:</span>
-                  <span className={`score-value ${getRiskColor(riskResult.band)}`}>
-                    {riskResult.score}/100
-                  </span>
-                  <span className={`score-band ${getRiskColor(riskResult.band)}`}>
-                    ({riskResult.band})
-                  </span>
-                </div>
                 <div className="trust-score-container">
                   <span className="trust-label">Trust Score:</span>
                   <div className="trust-score-bar">
@@ -390,7 +507,7 @@ function App() {
               </div>
             </div>
           ) : (
-            <p className="empty-state">No AI review available. Please upload a document and click Approve.</p>
+            <p className="empty-state">No AI review available. Please upload a document to see the risk assessment.</p>
           )}
         </div>
       )}
@@ -472,10 +589,10 @@ function App() {
                       <div className="metric-label">Overall Compliance</div>
                       <div className="metric-bar-container">
                         <div 
-                          className={`metric-bar ${riskResult.score >= 80 ? 'high' : riskResult.score >= 50 ? 'medium' : 'low'}`}
-                          style={{ width: `${riskResult.score}%` }}
+                          className={`metric-bar ${getTrustScore(riskResult.score) >= 80 ? 'high' : getTrustScore(riskResult.score) >= 50 ? 'medium' : 'low'}`}
+                          style={{ width: `${getTrustScore(riskResult.score)}%` }}
                         >
-                          {riskResult.score}%
+                          {getTrustScore(riskResult.score)}%
                         </div>
                       </div>
                     </div>
@@ -494,10 +611,117 @@ function App() {
                       <div className="metric-label">Risk Assessment</div>
                       <div className="metric-bar-container">
                         <div 
-                          className={`metric-bar ${riskResult.score >= 80 ? 'high' : riskResult.score >= 50 ? 'medium' : 'low'}`}
+                          className={`metric-bar ${riskResult.score <= 30 ? 'high' : riskResult.score <= 60 ? 'medium' : 'low'}`}
                           style={{ width: `${riskResult.score}%` }}
                         >
                           {riskResult.score}%
+                        </div>
+                      </div>
+                    </div>
+                    <div className="metric-item">
+                      <div className="metric-label">Watchlist & Sanctions</div>
+                      <div className="metric-bar-container">
+                        <div 
+                          className={`metric-bar ${riskResult.checks.find(c => c.label.toLowerCase().includes('watchlist') || c.label.toLowerCase().includes('unlisted'))?.status === 'ok' ? 'high' : riskResult.checks.find(c => c.label.toLowerCase().includes('watchlist') || c.label.toLowerCase().includes('unlisted'))?.status === 'warn' ? 'medium' : 'low'}`}
+                          style={{ width: `${riskResult.checks.find(c => c.label.toLowerCase().includes('watchlist') || c.label.toLowerCase().includes('unlisted'))?.status === 'ok' ? 100 : riskResult.checks.find(c => c.label.toLowerCase().includes('watchlist') || c.label.toLowerCase().includes('unlisted'))?.status === 'warn' ? 50 : 0}%` }}
+                        >
+                          {riskResult.checks.find(c => c.label.toLowerCase().includes('watchlist') || c.label.toLowerCase().includes('unlisted'))?.status === 'ok' ? '100%' : riskResult.checks.find(c => c.label.toLowerCase().includes('watchlist') || c.label.toLowerCase().includes('unlisted'))?.status === 'warn' ? '50%' : '0%'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="metric-item">
+                      <div className="metric-label">Data Completeness</div>
+                      <div className="metric-bar-container">
+                        <div 
+                          className={`metric-bar ${(() => {
+                            if (!extracted) return 'low';
+                            const fields = [extracted.businessName, extracted.registrationNo, extracted.address, extracted.entityType];
+                            const filledFields = fields.filter(f => f && f.trim()).length;
+                            const completeness = (filledFields / fields.length) * 100;
+                            return completeness >= 80 ? 'high' : completeness >= 50 ? 'medium' : 'low';
+                          })()}`}
+                          style={{ width: `${(() => {
+                            if (!extracted) return 0;
+                            const fields = [extracted.businessName, extracted.registrationNo, extracted.address, extracted.entityType];
+                            const filledFields = fields.filter(f => f && f.trim()).length;
+                            return (filledFields / fields.length) * 100;
+                          })()}%` }}
+                        >
+                          {(() => {
+                            if (!extracted) return '0%';
+                            const fields = [extracted.businessName, extracted.registrationNo, extracted.address, extracted.entityType];
+                            const filledFields = fields.filter(f => f && f.trim()).length;
+                            return `${Math.round((filledFields / fields.length) * 100)}%`;
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="metric-item">
+                      <div className="metric-label">Verification Status</div>
+                      <div className="metric-bar-container">
+                        <div 
+                          className={`metric-bar ${(() => {
+                            if (!riskResult.checks || riskResult.checks.length === 0) return 'low';
+                            const passedChecks = riskResult.checks.filter(c => c.status === 'ok').length;
+                            const totalChecks = riskResult.checks.length;
+                            const verificationRate = (passedChecks / totalChecks) * 100;
+                            return verificationRate >= 80 ? 'high' : verificationRate >= 50 ? 'medium' : 'low';
+                          })()}`}
+                          style={{ width: `${(() => {
+                            if (!riskResult.checks || riskResult.checks.length === 0) return 0;
+                            const passedChecks = riskResult.checks.filter(c => c.status === 'ok').length;
+                            const totalChecks = riskResult.checks.length;
+                            return (passedChecks / totalChecks) * 100;
+                          })()}%` }}
+                        >
+                          {(() => {
+                            if (!riskResult.checks || riskResult.checks.length === 0) return '0%';
+                            const passedChecks = riskResult.checks.filter(c => c.status === 'ok').length;
+                            const totalChecks = riskResult.checks.length;
+                            return `${Math.round((passedChecks / totalChecks) * 100)}%`;
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="metric-item">
+                      <div className="metric-label">Regulatory Compliance</div>
+                      <div className="metric-bar-container">
+                        <div 
+                          className={`metric-bar ${(() => {
+                            if (!extracted || !riskResult.checks) return 'low';
+                            const regChecks = riskResult.checks.filter(c => 
+                              c.label.toLowerCase().includes('registration') || 
+                              c.label.toLowerCase().includes('address') ||
+                              c.label.toLowerCase().includes('format')
+                            );
+                            if (regChecks.length === 0) return 'low';
+                            const passedReg = regChecks.filter(c => c.status === 'ok').length;
+                            const regRate = (passedReg / regChecks.length) * 100;
+                            return regRate >= 80 ? 'high' : regRate >= 50 ? 'medium' : 'low';
+                          })()}`}
+                          style={{ width: `${(() => {
+                            if (!extracted || !riskResult.checks) return 0;
+                            const regChecks = riskResult.checks.filter(c => 
+                              c.label.toLowerCase().includes('registration') || 
+                              c.label.toLowerCase().includes('address') ||
+                              c.label.toLowerCase().includes('format')
+                            );
+                            if (regChecks.length === 0) return 0;
+                            const passedReg = regChecks.filter(c => c.status === 'ok').length;
+                            return (passedReg / regChecks.length) * 100;
+                          })()}%` }}
+                        >
+                          {(() => {
+                            if (!extracted || !riskResult.checks) return '0%';
+                            const regChecks = riskResult.checks.filter(c => 
+                              c.label.toLowerCase().includes('registration') || 
+                              c.label.toLowerCase().includes('address') ||
+                              c.label.toLowerCase().includes('format')
+                            );
+                            if (regChecks.length === 0) return '0%';
+                            const passedReg = regChecks.filter(c => c.status === 'ok').length;
+                            return `${Math.round((passedReg / regChecks.length) * 100)}%`;
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -580,58 +804,7 @@ function App() {
         </>
       )}
 
-      {activeTab === 'Approved' && (
-        <div className="card">
-          <h3 className="section-title">Approval Status</h3>
-          {riskResult ? (
-            <div className="approval-content">
-              {riskResult.score >= 80 ? (
-                <div className="approval-success">
-                  <div className="approval-icon">✓</div>
-                  <h3>Vendor Approved</h3>
-                  <p>This vendor has been approved for onboarding based on the risk assessment.</p>
-                  <div className="approval-details">
-                    <div className="approval-detail-item">
-                      <span className="detail-label">Risk Score:</span>
-                      <span className="detail-value">{riskResult.score}/100</span>
-                    </div>
-                    <div className="approval-detail-item">
-                      <span className="detail-label">Trust Score:</span>
-                      <span className="detail-value">{getTrustScore(riskResult.score)}%</span>
-                    </div>
-                    <div className="approval-detail-item">
-                      <span className="detail-label">Status:</span>
-                      <span className="detail-value">{riskResult.band}</span>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="approval-pending">
-                  <div className="approval-icon">⏳</div>
-                  <h3>Approval Pending</h3>
-                  <p>This vendor requires manual review before approval.</p>
-                  <div className="approval-details">
-                    <div className="approval-detail-item">
-                      <span className="detail-label">Risk Score:</span>
-                      <span className="detail-value">{riskResult.score}/100</span>
-                    </div>
-                    <div className="approval-detail-item">
-                      <span className="detail-label">Trust Score:</span>
-                      <span className="detail-value">{getTrustScore(riskResult.score)}%</span>
-                    </div>
-                    <div className="approval-detail-item">
-                      <span className="detail-label">Status:</span>
-                      <span className="detail-value">{riskResult.band}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="empty-state">No approval data available. Please complete the review process.</p>
-          )}
-        </div>
-      )}
+
 
       {/* Activity Log */}
       <div className="activity-log">
@@ -722,59 +895,50 @@ function App() {
     setSelectedVendor(updatedVendor)
   }
 
-  const renderVendorsView = () => {
-    const approvedVendors = vendors.filter(v => (v.risk || 0) >= 80 || v.status === 'Approved')
-    
+  const renderApprovedVendorsView = () => {
     return (
       <div className="history-view">
-        <h2 className="page-title">Approved Vendors</h2>
+        <h2 className="page-title">Approved {entityType === 'client' ? 'Clients' : 'Vendors'}</h2>
         <div className="vendors-list">
           {approvedVendors.length === 0 ? (
-            <div className="empty-state">No approved vendors yet</div>
+            <div className="empty-state">No approved {entityType === 'client' ? 'clients' : 'vendors'} yet</div>
           ) : (
             approvedVendors.map((vendor) => (
               <div 
                 key={vendor.id} 
                 className="vendor-card clickable"
-                onClick={() => setSelectedVendor(vendor)}
+                onClick={() => setSelectedApprovedVendor(vendor)}
               >
                 <div className="vendor-card-header">
-                  <h3 className="vendor-card-name">{vendor.name}</h3>
-                  <div className={`vendor-status-badge ${vendor.status?.toLowerCase().replace(' ', '-')}`}>
-                    {vendor.status || 'Pending'}
+                  <h3 className="vendor-card-name">{vendor.vendorName}</h3>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <div className={`entity-type-badge ${vendor.entityType}`}>
+                      {vendor.entityType === 'client' ? '👤 Client' : '🏢 Vendor'}
+                    </div>
+                    <div className={`vendor-status-badge approved`}>
+                      Approved
+                    </div>
                   </div>
                 </div>
                 <div className="vendor-card-details">
-                  {vendor.email && (
                     <div className="vendor-detail">
-                      <span className="detail-icon">📧</span>
-                      <span>{vendor.email}</span>
+                    <span className="detail-icon">🏢</span>
+                    <span>{vendor.extracted.businessName || 'N/A'}</span>
                     </div>
-                  )}
-                  {vendor.address && (
                     <div className="vendor-detail">
                       <span className="detail-icon">📍</span>
-                      <span>{vendor.address}</span>
+                    <span>{vendor.extracted.address || 'N/A'}</span>
                     </div>
-                  )}
-                  {vendor.country && (
                     <div className="vendor-detail">
-                      <span className="detail-icon">🌍</span>
-                      <span>{vendor.country}</span>
+                    <span className="detail-icon">📅</span>
+                    <span>Approved: {new Date(vendor.approvedAt).toLocaleDateString()}</span>
                     </div>
-                  )}
-                  {vendor.onboarded && (
-                    <div className="vendor-detail onboarded-badge">
-                      <span className="detail-icon">✓</span>
-                      <span>Onboarded</span>
-                    </div>
-                  )}
                 </div>
                 <div className="vendor-card-footer">
                   <div className="vendor-risk-score">
                     <span className="risk-label">Risk:</span>
-                    <span className={`risk-value ${vendor.risk && vendor.risk >= 80 ? 'low' : vendor.risk && vendor.risk >= 50 ? 'medium' : 'high'}`}>
-                      {vendor.risk || 'N/A'}
+                    <span className={`risk-value ${vendor.riskResult.band.toLowerCase()}`}>
+                      {vendor.riskResult.score}/100 ({vendor.riskResult.band})
                     </span>
                   </div>
                   <div className="vendor-trust-score">
@@ -782,11 +946,259 @@ function App() {
                     <div className="trust-mini-bar">
                       <div 
                         className="trust-mini-fill" 
-                        style={{ width: `${getTrustScore(vendor.risk)}%` }}
+                        style={{ width: `${getTrustScore(vendor.riskResult.score)}%` }}
                       />
                     </div>
-                    <span className="trust-value">{getTrustScore(vendor.risk)}%</span>
+                    <span className="trust-value">{getTrustScore(vendor.riskResult.score)}%</span>
                   </div>
+                </div>
+                <div className="vendor-lifecycle-indicator">
+                  <span className="lifecycle-label">Lifecycle:</span>
+                  <span className={`lifecycle-phase-badge ${vendor.lifecyclePhase}`} style={{ backgroundColor: getLifecyclePhaseColor(vendor.lifecyclePhase) }}>
+                    {getLifecyclePhaseName(vendor.lifecyclePhase)}
+                  </span>
+                </div>
+              </div>
+            ))
+          )}
+                    </div>
+      </div>
+    )
+  }
+
+  const getLifecyclePhaseName = (phase: string) => {
+    const phases: Record<string, string> = {
+      'contract-negotiation': 'Contract Negotiation',
+      'vendor-onboarding': 'Vendor Onboarding',
+      'performance-management': 'Performance Management',
+      'risk-compliance': 'Risk & Compliance',
+      'reviewal': 'Reviewal',
+      'extension-renewal': 'Extension/Renewal',
+      'offboarding': 'Offboarding'
+    }
+    return phases[phase] || phase
+  }
+
+  const getLifecyclePhaseColor = (phase: string) => {
+    const colors: Record<string, string> = {
+      'contract-negotiation': '#3b82f6',
+      'vendor-onboarding': '#10b981',
+      'performance-management': '#f59e0b',
+      'risk-compliance': '#ef4444',
+      'reviewal': '#8b5cf6',
+      'extension-renewal': '#06b6d4',
+      'offboarding': '#6b7280'
+    }
+    return colors[phase] || '#6b7280'
+  }
+
+  const renderApprovedVendorDetailView = (vendor: typeof approvedVendors[0]) => {
+    const lifecyclePhases = [
+      { id: 'contract-negotiation', name: 'Contract Negotiation and Signing', description: 'Define legal, financial, and performance terms. Establish framework for operations and success measurement.', color: '#3b82f6' },
+      { id: 'vendor-onboarding', name: 'Vendor Onboarding', description: 'Integrate vendor into company systems. Collect essential information, create profiles, provide access.', color: '#10b981' },
+      { id: 'performance-management', name: 'Performance Management', description: 'Evaluate vendor delivery on agreed expectations. Track KPIs, conduct reviews, implement improvements.', color: '#f59e0b' },
+      { id: 'risk-compliance', name: 'Risk and Compliance Monitoring', description: 'Continuous review of financial stability, security, and compliance. Periodic risk assessments.', color: '#ef4444' },
+      { id: 'reviewal', name: 'Reviewal (Contract Evaluation)', description: 'Formal review of performance, cost-benefit, and compliance before renewal/termination decision.', color: '#8b5cf6' },
+      { id: 'extension-renewal', name: 'Extension or Renewal', description: 'Renew or extend contract with updated terms based on performance and new business needs.', color: '#06b6d4' },
+      { id: 'offboarding', name: 'Offboarding (Termination)', description: 'Secure separation: complete deliverables, terminate access, retrieve data, archive records.', color: '#6b7280' }
+    ]
+
+    const currentPhaseIndex = lifecyclePhases.findIndex(p => p.id === vendor.lifecyclePhase)
+
+    return (
+      <div className="vendor-detail-view">
+        <div className="vendor-detail-header">
+          <button className="back-button" onClick={() => setSelectedApprovedVendor(null)}>
+            ← Back to Approved {vendor.entityType === 'client' ? 'Clients' : 'Vendors'}
+          </button>
+          <div className="vendor-detail-title">
+            <h2 className="page-title">{vendor.vendorName}</h2>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <div className={`entity-type-badge ${vendor.entityType}`}>
+                {vendor.entityType === 'client' ? '👤 Client' : '🏢 Vendor'}
+              </div>
+              <div className={`vendor-status-badge approved`}>
+                Approved
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="vendor-detail-content">
+          <div className="card">
+            <h3 className="section-title">{vendor.entityType === 'client' ? 'Client' : 'Vendor'} Information</h3>
+            <div className="vendor-info-grid">
+              <div className="info-item">
+                <span className="info-label">Business Name:</span>
+                <span className="info-value">{vendor.extracted.businessName || 'N/A'}</span>
+              </div>
+              <div className="info-item">
+                <span className="info-label">Registration No:</span>
+                <span className="info-value">{vendor.extracted.registrationNo || 'N/A'}</span>
+              </div>
+              <div className="info-item">
+                <span className="info-label">Address:</span>
+                <span className="info-value">{vendor.extracted.address || 'N/A'}</span>
+              </div>
+              <div className="info-item">
+                <span className="info-label">Entity Type:</span>
+                <span className="info-value">{vendor.extracted.entityType || 'N/A'}</span>
+              </div>
+              <div className="info-item">
+                <span className="info-label">Trust Score:</span>
+                <span className="info-value">{getTrustScore(vendor.riskResult.score)}%</span>
+              </div>
+              <div className="info-item">
+                <span className="info-label">Risk Score:</span>
+                <span className={`info-value ${vendor.riskResult.band.toLowerCase()}`}>
+                  {vendor.riskResult.score}/100 ({vendor.riskResult.band})
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3 className="section-title">Lifecycle Management</h3>
+            <div className="lifecycle-phases">
+              {lifecyclePhases.map((phase, index) => {
+                const isActive = vendor.lifecyclePhase === phase.id
+                
+                return (
+                  <div 
+                    key={phase.id} 
+                    className={`lifecycle-phase ${isActive ? 'active' : ''}`}
+                    style={{ borderLeftColor: phase.color, borderLeftWidth: '4px', borderLeftStyle: 'solid' }}
+                  >
+                    <div className="phase-header">
+                      <div className="phase-number" style={{ backgroundColor: phase.color }}>
+                        {index + 1}
+                      </div>
+                      <div className="phase-info">
+                        <div className="phase-name">{phase.name}</div>
+                        <div className="phase-description">{phase.description}</div>
+                      </div>
+                      {isActive && <div className="phase-badge active" style={{ backgroundColor: phase.color }}>Current</div>}
+                    </div>
+                    <div className="phase-actions">
+                      {!isActive ? (
+                        <button 
+                          className="btn-secondary"
+                          onClick={() => {
+                            // If offboarding, remove from approved list
+                            if (phase.id === 'offboarding') {
+                              setApprovedVendors(approvedVendors.filter(v => v.id !== vendor.id))
+                              setSelectedApprovedVendor(null)
+                              console.log(`✅ ${vendor.vendorName} has been offboarded and removed from approved list`)
+                            } else {
+                              // Otherwise, just update the phase
+                              setApprovedVendors(approvedVendors.map(v => 
+                                v.id === vendor.id 
+                                  ? { ...v, lifecyclePhase: phase.id }
+                                  : v
+                              ))
+                              setSelectedApprovedVendor({
+                                ...vendor,
+                                lifecyclePhase: phase.id
+                              })
+                            }
+                          }}
+                        >
+                          Set to {phase.name}
+                        </button>
+                      ) : (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          {phase.id === 'offboarding' ? (
+                            <button 
+                              className="btn-danger"
+                              onClick={() => {
+                                setApprovedVendors(approvedVendors.filter(v => v.id !== vendor.id))
+                                setSelectedApprovedVendor(null)
+                                console.log(`✅ ${vendor.vendorName} has been offboarded and removed from approved list`)
+                              }}
+                            >
+                              Complete Offboarding & Remove
+                            </button>
+                          ) : (
+                            <span className="current-phase-indicator" style={{ color: phase.color, fontWeight: 600 }}>
+                              Currently in this phase
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderFlaggedVendorsView = () => {
+    return (
+      <div className="history-view">
+        <h2 className="page-title">Flagged {entityType === 'client' ? 'Clients' : 'Vendors'}</h2>
+        <div className="vendors-list">
+          {flaggedVendors.length === 0 ? (
+            <div className="empty-state">No flagged {entityType === 'client' ? 'clients' : 'vendors'} yet</div>
+          ) : (
+            flaggedVendors.map((vendor) => (
+              <div 
+                key={vendor.id} 
+                className="vendor-card"
+              >
+                <div className="vendor-card-header">
+                  <h3 className="vendor-card-name">{vendor.vendorName}</h3>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <div className={`entity-type-badge ${vendor.entityType}`}>
+                      {vendor.entityType === 'client' ? '👤 Client' : '🏢 Vendor'}
+                    </div>
+                    <div className={`vendor-status-badge flagged`}>
+                      🚩 Flagged
+                    </div>
+                  </div>
+                </div>
+                <div className="vendor-card-details">
+                  <div className="vendor-detail">
+                    <span className="detail-icon">🏢</span>
+                    <span>{vendor.extracted.businessName || 'N/A'}</span>
+                  </div>
+                  <div className="vendor-detail">
+                    <span className="detail-icon">📍</span>
+                    <span>{vendor.extracted.address || 'N/A'}</span>
+                  </div>
+                  <div className="vendor-detail">
+                    <span className="detail-icon">📅</span>
+                    <span>Flagged: {new Date(vendor.flaggedAt).toLocaleDateString()}</span>
+                  </div>
+                </div>
+                <div className="vendor-card-footer">
+                  <div className="vendor-risk-score">
+                    <span className="risk-label">Risk:</span>
+                    <span className={`risk-value ${vendor.riskResult.band.toLowerCase()}`}>
+                      {vendor.riskResult.score}/100 ({vendor.riskResult.band})
+                    </span>
+                  </div>
+                  <div className="vendor-trust-score">
+                    <span className="trust-label">Trust:</span>
+                    <div className="trust-mini-bar">
+                      <div 
+                        className="trust-mini-fill" 
+                        style={{ width: `${getTrustScore(vendor.riskResult.score)}%` }}
+                      />
+                    </div>
+                    <span className="trust-value">{getTrustScore(vendor.riskResult.score)}%</span>
+                  </div>
+                </div>
+                <div className="flagged-vendor-actions">
+                  <button 
+                    className="btn-remove"
+                    onClick={() => setFlaggedVendors(flaggedVendors.filter(v => v.id !== vendor.id))}
+                  >
+                    Remove from Flagged
+                  </button>
                 </div>
               </div>
             ))
@@ -853,14 +1265,14 @@ function App() {
                 </div>
               )}
               <div className="info-item">
+                <span className="info-label">Trust Score:</span>
+                <span className="info-value">{getTrustScore(vendor.risk)}%</span>
+              </div>
+              <div className="info-item">
                 <span className="info-label">Risk Score:</span>
                 <span className={`info-value ${vendor.risk && vendor.risk >= 80 ? 'low' : vendor.risk && vendor.risk >= 50 ? 'medium' : 'high'}`}>
                   {vendor.risk || 'N/A'}
                 </span>
-              </div>
-              <div className="info-item">
-                <span className="info-label">Trust Score:</span>
-                <span className="info-value">{getTrustScore(vendor.risk)}%</span>
               </div>
             </div>
           </div>
@@ -971,82 +1383,197 @@ function App() {
     )
   }
 
-  const renderComplianceView = () => (
-    <div className="compliance-view">
-      <h2 className="page-title">Compliance Dashboard</h2>
-      <div className="compliance-overview">
-        <div className="card">
-          <h3 className="section-title">Overall Compliance Status</h3>
-          <div className="compliance-stats">
-            <div className="stat-card">
-              <div className="stat-value">{vendors.filter(v => (v.risk || 0) >= 80).length}</div>
-              <div className="stat-label">Compliant Vendors</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{vendors.filter(v => (v.risk || 0) >= 50 && (v.risk || 0) < 80).length}</div>
-              <div className="stat-label">Under Review</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{vendors.filter(v => (v.risk || 0) < 50).length}</div>
-              <div className="stat-label">Non-Compliant</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{vendors.length}</div>
-              <div className="stat-label">Total Vendors</div>
-            </div>
+  const renderComplianceView = () => {
+    const totalVendors = vendors.length + approvedVendors.length + flaggedVendors.length
+    const compliantCount = approvedVendors.length
+    const flaggedCount = flaggedVendors.length
+    const underReviewCount = vendors.filter(v => (v.risk || 0) >= 50 && (v.risk || 0) < 80).length
+    const nonCompliantCount = flaggedVendors.length + vendors.filter(v => (v.risk || 0) < 50).length
+    const complianceRate = totalVendors > 0 ? Math.round((compliantCount / totalVendors) * 100) : 0
+
+    return (
+      <div className="compliance-view">
+        <div className="compliance-header-section">
+          <div>
+            <h2 className="page-title">Compliance Dashboard</h2>
+            <p className="compliance-subtitle">Monitor and manage vendor compliance across all entities</p>
+          </div>
+          <div className={`compliance-badge-large ${complianceRate >= 80 ? 'compliant' : complianceRate >= 50 ? 'review' : 'non-compliant'}`}>
+            {complianceRate}% Compliance Rate
           </div>
         </div>
 
-        <div className="card">
-          <h3 className="section-title">Compliance Requirements</h3>
-          <div className="requirements-overview">
-            <div className="requirement-overview-item">
-              <span className="req-icon">✓</span>
-              <span className="req-text">Business Registration Verification</span>
-            </div>
-            <div className="requirement-overview-item">
-              <span className="req-icon">✓</span>
-              <span className="req-text">Address Validation</span>
-            </div>
-            <div className="requirement-overview-item">
-              <span className="req-icon">✓</span>
-              <span className="req-text">Sanctions & Watchlist Screening</span>
-            </div>
-            <div className="requirement-overview-item">
-              <span className="req-icon">⏳</span>
-              <span className="req-text">Financial History Review</span>
-            </div>
-            <div className="requirement-overview-item">
-              <span className="req-icon">✓</span>
-              <span className="req-text">Risk Assessment</span>
+        <div className="compliance-overview">
+          <div className="card">
+            <h3 className="section-title">📊 Overall Compliance Status</h3>
+            <div className="compliance-stats">
+              <div className="stat-card stat-card-primary">
+                <div className="stat-icon">✅</div>
+                <div className="stat-value">{compliantCount}</div>
+                <div className="stat-label">Approved & Compliant</div>
+                <div className="stat-trend">+{approvedVendors.length} this session</div>
+              </div>
+              <div className="stat-card stat-card-warning">
+                <div className="stat-icon">⏳</div>
+                <div className="stat-value">{underReviewCount}</div>
+                <div className="stat-label">Under Review</div>
+                <div className="stat-trend">Pending assessment</div>
+              </div>
+              <div className="stat-card stat-card-danger">
+                <div className="stat-icon">🚩</div>
+                <div className="stat-value">{flaggedCount}</div>
+                <div className="stat-label">Flagged Vendors</div>
+                <div className="stat-trend">Requires attention</div>
+              </div>
+              <div className="stat-card stat-card-info">
+                <div className="stat-icon">📋</div>
+                <div className="stat-value">{totalVendors}</div>
+                <div className="stat-label">Total Entities</div>
+                <div className="stat-trend">{approvedVendors.length} approved, {flaggedVendors.length} flagged</div>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="card">
-          <h3 className="section-title">Recent Compliance Activities</h3>
-          <div className="compliance-activities">
-            {activities
-              .filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload')
-              .slice(0, 10)
-              .map((activity) => (
-                <div key={activity.id || activity.at || activity.t} className="compliance-activity-item">
-                  <div className="activity-time-small">
-                    {new Date(activity.at || activity.t || Date.now()).toLocaleString()}
+          <div className="compliance-grid">
+            <div className="card">
+              <h3 className="section-title">✅ Compliance Requirements</h3>
+              <div className="requirements-overview">
+                <div className="requirement-overview-item requirement-passed">
+                  <div className="req-icon-wrapper">
+                    <span className="req-icon">✓</span>
                   </div>
-                  <div className="activity-description">
-                    {formatActivityMessage(activity)}
+                  <div className="req-content">
+                    <span className="req-text">Business Registration Verification</span>
+                    <span className="req-status-badge passed">Active</span>
                   </div>
                 </div>
-              ))}
-            {activities.filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload').length === 0 && (
-              <div className="empty-state">No compliance activities yet</div>
-            )}
+                <div className="requirement-overview-item requirement-passed">
+                  <div className="req-icon-wrapper">
+                    <span className="req-icon">✓</span>
+                  </div>
+                  <div className="req-content">
+                    <span className="req-text">Address Validation</span>
+                    <span className="req-status-badge passed">Active</span>
+                  </div>
+                </div>
+                <div className="requirement-overview-item requirement-passed">
+                  <div className="req-icon-wrapper">
+                    <span className="req-icon">✓</span>
+                  </div>
+                  <div className="req-content">
+                    <span className="req-text">Sanctions & Watchlist Screening</span>
+                    <span className="req-status-badge passed">Active</span>
+                  </div>
+                </div>
+                <div className="requirement-overview-item requirement-pending">
+                  <div className="req-icon-wrapper">
+                    <span className="req-icon">⏳</span>
+                  </div>
+                  <div className="req-content">
+                    <span className="req-text">Financial History Review</span>
+                    <span className="req-status-badge pending">Pending</span>
+                  </div>
+                </div>
+                <div className="requirement-overview-item requirement-passed">
+                  <div className="req-icon-wrapper">
+                    <span className="req-icon">✓</span>
+                  </div>
+                  <div className="req-content">
+                    <span className="req-text">AI-Powered Risk Assessment</span>
+                    <span className="req-status-badge passed">Active</span>
+                  </div>
+                </div>
+                <div className="requirement-overview-item requirement-passed">
+                  <div className="req-icon-wrapper">
+                    <span className="req-icon">✓</span>
+                  </div>
+                  <div className="req-content">
+                    <span className="req-text">Documentation Verification</span>
+                    <span className="req-status-badge passed">Active</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <h3 className="section-title">📈 Compliance Metrics</h3>
+              <div className="compliance-metrics-summary">
+                <div className="metric-summary-item">
+                  <div className="metric-summary-label">Average Trust Score</div>
+                  <div className="metric-summary-value">
+                    {approvedVendors.length > 0 
+                      ? Math.round(approvedVendors.reduce((sum, v) => sum + getTrustScore(v.riskResult.score), 0) / approvedVendors.length)
+                      : 'N/A'}%
+                  </div>
+                  <div className="metric-summary-bar">
+                    <div 
+                      className="metric-summary-fill" 
+                      style={{ 
+                        width: `${approvedVendors.length > 0 
+                          ? approvedVendors.reduce((sum, v) => sum + getTrustScore(v.riskResult.score), 0) / approvedVendors.length
+                          : 0}%` 
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="metric-summary-item">
+                  <div className="metric-summary-label">Average Risk Score</div>
+                  <div className="metric-summary-value">
+                    {approvedVendors.length > 0 
+                      ? Math.round(approvedVendors.reduce((sum, v) => sum + v.riskResult.score, 0) / approvedVendors.length)
+                      : 'N/A'}/100
+                  </div>
+                  <div className="metric-summary-bar">
+                    <div 
+                      className="metric-summary-fill risk" 
+                      style={{ 
+                        width: `${approvedVendors.length > 0 
+                          ? approvedVendors.reduce((sum, v) => sum + v.riskResult.score, 0) / approvedVendors.length
+                          : 0}%` 
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="metric-summary-item">
+                  <div className="metric-summary-label">Entities Processed Today</div>
+                  <div className="metric-summary-value">{activities.filter(a => a.type === 'upload').length}</div>
+                </div>
+                <div className="metric-summary-item">
+                  <div className="metric-summary-label">Risk Assessments Completed</div>
+                  <div className="metric-summary-value">{activities.filter(a => a.type === 'score').length}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3 className="section-title">🕒 Recent Compliance Activities</h3>
+            <div className="compliance-activities">
+              {activities
+                .filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload')
+                .slice(0, 15)
+                .map((activity, idx) => (
+                  <div key={activity.id || activity.at || activity.t || idx} className="compliance-activity-item">
+                    <div className="activity-indicator" />
+                    <div className="activity-content">
+                      <div className="activity-time-small">
+                        {new Date(activity.at || activity.t || Date.now()).toLocaleString()}
+                      </div>
+                      <div className="activity-description">
+                        {formatActivityMessage(activity)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              {activities.filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload').length === 0 && (
+                <div className="empty-state">No compliance activities yet</div>
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div className="app-container">
@@ -1056,7 +1583,28 @@ function App() {
         onMouseEnter={() => setSidebarExpanded(true)}
         onMouseLeave={() => setSidebarExpanded(false)}
       >
-        <div className="sidebar-logo">
+        <div 
+          className="sidebar-logo"
+          onClick={() => {
+            // Full reset - clear all state
+            setCurrentView('home')
+            setSelectedVendor(null)
+            setSelectedApprovedVendor(null)
+            setActiveTab('Draft')
+            setUploadedFile(null)
+            setExtracted(null)
+            setRiskResult(null)
+            setError(null)
+            setVendorName('AI Manager')
+            setEntityType('vendor')
+            // Reset file input
+            const fileInput = document.getElementById('file-upload') as HTMLInputElement
+            if (fileInput) {
+              fileInput.value = ''
+            }
+          }}
+          style={{ cursor: 'pointer' }}
+        >
           <img 
             src="/gs-logo.png" 
             alt="Goldman Sachs" 
@@ -1080,11 +1628,18 @@ function App() {
             {sidebarExpanded && <span className="nav-label">Home</span>}
           </div>
           <div 
-            className={`nav-item ${currentView === 'vendors' ? 'active' : ''}`}
-            onClick={() => { setCurrentView('vendors'); setSelectedVendor(null); }}
+            className={`nav-item ${currentView === 'approved' ? 'active' : ''}`}
+            onClick={() => { setCurrentView('approved'); setSelectedApprovedVendor(null); }}
           >
-            <span className="nav-icon">📋</span>
-            {sidebarExpanded && <span className="nav-label">Approved Vendors</span>}
+            <span className="nav-icon">✅</span>
+            {sidebarExpanded && <span className="nav-label">Approved {entityType === 'client' ? 'Clients' : 'Vendors'}</span>}
+          </div>
+          <div 
+            className={`nav-item ${currentView === 'flagged' ? 'active' : ''}`}
+            onClick={() => { setCurrentView('flagged'); setSelectedVendor(null); }}
+          >
+            <span className="nav-icon">🚩</span>
+            {sidebarExpanded && <span className="nav-label">Flagged {entityType === 'client' ? 'Clients' : 'Vendors'}</span>}
           </div>
           <div 
             className={`nav-item ${currentView === 'compliance' ? 'active' : ''}`}
@@ -1116,6 +1671,8 @@ function App() {
           {/* Left Panel */}
           <div className="left-panel">
             {currentView === 'home' && renderHomeView()}
+            {currentView === 'approved' && (selectedApprovedVendor ? renderApprovedVendorDetailView(selectedApprovedVendor) : renderApprovedVendorsView())}
+            {currentView === 'flagged' && renderFlaggedVendorsView()}
             {currentView === 'vendors' && (selectedVendor ? renderVendorDetailView(selectedVendor) : renderVendorsView())}
             {currentView === 'compliance' && renderComplianceView()}
           </div>
@@ -1127,6 +1684,7 @@ function App() {
               <>
                 <div className="card">
                   <div className="risk-gauge-container">
+                    <div className="risk-score-label-above">Risk Score</div>
                     <div className="risk-gauge">
                       <svg className="gauge-svg" viewBox="0 0 120 120">
                         <circle
@@ -1154,10 +1712,6 @@ function App() {
                     </div>
                     <div className={`risk-band ${getRiskColor(riskResult.band)}`}>
                       {riskResult.band}
-                    </div>
-                    <div className="trust-score-display">
-                      <span className="trust-score-label">Trust Score</span>
-                      <span className="trust-score-number">{getTrustScore(riskResult.score)}%</span>
                     </div>
                   </div>
                 </div>
@@ -1193,7 +1747,7 @@ function App() {
               <div className="card">
                 <p className="empty-state">
                   {currentView === 'home' 
-                    ? 'Upload a document and click Approve to see risk assessment'
+                    ? 'Upload a document to see risk assessment'
                     : 'Select a vendor to view details'}
                 </p>
               </div>
