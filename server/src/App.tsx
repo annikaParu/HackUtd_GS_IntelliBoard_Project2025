@@ -18,12 +18,14 @@ interface RiskResult {
 }
 
 interface ActivityEvent {
-  id: string
-  actor: string
-  type: string
-  vendorId: string | null
-  payload: any
-  at: string
+  id?: string
+  actor?: string
+  type?: string
+  vendorId?: string | null
+  payload?: any
+  at?: string
+  t?: string  // Legacy format timestamp
+  msg?: string  // Legacy format message
 }
 
 interface Vendor {
@@ -230,7 +232,7 @@ function App() {
             </div>
           )}
 
-          <div className="card">
+      <div className="card">
             {uploadedFile ? (
               <div className="uploaded-doc">
                 <div className="doc-icon">✓</div>
@@ -312,7 +314,7 @@ function App() {
                 disabled={!extracted || loading}
               >
                 {loading ? 'Processing...' : 'Approve'}
-              </button>
+        </button>
             </div>
           </div>
         </>
@@ -609,10 +611,10 @@ function App() {
             <div className="activity-item">No activities yet</div>
           ) : (
             activities.slice(0, 5).map((activity) => (
-              <div key={activity.id || activity.at} className="activity-item">
-                <span className="activity-time">
-                  {new Date(activity.at || activity.t).toLocaleTimeString()}
-                </span>
+                  <div key={activity.id || activity.at || activity.t} className="activity-item">
+                    <span className="activity-time">
+                      {new Date(activity.at || activity.t || Date.now()).toLocaleTimeString()}
+                    </span>
                 <span className="activity-msg">
                   {formatActivityMessage(activity)}
                 </span>
@@ -998,9 +1000,9 @@ function App() {
               .filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload')
               .slice(0, 10)
               .map((activity) => (
-                <div key={activity.id || activity.at} className="compliance-activity-item">
+                <div key={activity.id || activity.at || activity.t} className="compliance-activity-item">
                   <div className="activity-time-small">
-                    {new Date(activity.at || activity.t).toLocaleString()}
+                    {new Date(activity.at || activity.t || Date.now()).toLocaleString()}
                   </div>
                   <div className="activity-description">
                     {formatActivityMessage(activity)}

@@ -1,0 +1,20 @@
+{
+  "name": "intelliboard",
+  "version": "1.0.0",
+  "description": "IntelliBoard - Vendor Onboarding & Risk Platform",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd server/api-server && npm run dev",
+    "dev:frontend": "cd server && npm run dev",
+    "install:all": "cd server/api-server && npm install && cd ../.. && cd server && npm install",
+    "build": "cd server && npm run build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+
