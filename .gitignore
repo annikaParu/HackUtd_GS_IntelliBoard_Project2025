@@ -1,0 +1,17 @@
+# Node
+node_modules/
+dist/
+
+# Env & OS
+.env
+*.env
+.DS_Store
+
+# Editor
+.vscode/
+node_modules/
+dist/
+.env
+*.env
+.DS_Store
+.vscode/
