@@ -4,11 +4,17 @@ IntelliBoard is a vendor/client onboarding and risk platform that turns messy, m
 
 ## Features
 
-- ✅ **AI-Assisted Intake**: Upload registration PDFs/images; OCR+parse auto-fills vendor fields
+- ✅ **AI-Assisted Intake**: Upload registration PDFs/images; OCR+parse auto-fills vendor/client fields
+- ✅ **AI-Powered Risk Assessment**: OpenAI analyzes vendor/client information to determine trust/risk scores with intelligent reasoning
+- ✅ **Privacy & PII Detection**: Automatically detects and masks PII (emails, phones, SSNs, credit cards, etc.) with risk-based recommendations
+- ✅ **Fraud Detection**: Real-time watchlist screening and behavioral pattern analysis
+- ✅ **Automated Workflow Engine**: 7-phase lifecycle management with dynamic routing and approvals
+- ✅ **Security Assessment**: Compliance checks for registration, address validation, sanctions screening
 - ✅ **Offline Support**: Works with local watchlist + OCR; escalates to OpenAI for normalization when available
-- ✅ **Risk Scoring**: Deterministic + ML rules compute a 0–100 score with clear explainability
+- ✅ **Risk Scoring**: AI-powered analysis (when available) or deterministic rules compute a 0–100 score with clear explainability
 - ✅ **Compliance & Audit Trail**: Every event (upload, edit, decision) is logged with timestamps & user IDs
 - ✅ **Professional UX**: Goldman-Sachs-style app chrome with sidebar, topbar, right-rail risk panel
+- ✅ **Client & Vendor Support**: Unified platform for both vendor and client onboarding
 
 ## Architecture
 
@@ -16,7 +22,7 @@ IntelliBoard is a vendor/client onboarding and risk platform that turns messy, m
 Frontend (Vite + React + TypeScript)
    └── calls REST API (fetch, VITE_API_URL)
 Backend (Node/Express)
-   ├── /extract         -> parse + structure fields from PDF/img
+   ├── /extract         -> parse + structure fields from PDF/img (includes PII detection)
    ├── /risk/score      -> compute score + reasons + checks
    ├── /vendors/:id     -> fetch stored vendor
    ├── /activity         -> get activity log
@@ -24,6 +30,7 @@ Backend (Node/Express)
 Services
    ├── OCR/Parsing      -> pdf-parse (offline), regex fallback
    ├── OpenAI (optional) -> field normalization & summarization
+   ├── Privacy Module   -> PII detection, masking, risk assessment
    └── Watchlist        -> local JSON of names/entities (offline)
 ```
 
@@ -44,8 +51,8 @@ npm install
 Create `.env` file:
 ```bash
 OPENAI_API_KEY=your_openai_api_key_here
-MODEL=gpt-3.5-turbo
 PORT=4000
+MODEL=gpt-3.5-turbo
 ```
 
 **Note**: If you don't have an OpenAI API key, the system will work in offline mode using regex extraction. Just create the `.env` file without the `OPENAI_API_KEY` line.
@@ -93,6 +100,46 @@ You should see:
 
 Open your browser and navigate to: **http://localhost:5173**
 
+## Using Kaggle Datasets for Training
+
+IntelliBoard supports integration with Kaggle datasets to improve training and validation. See [server/api-server/datasets/README.md](server/api-server/datasets/README.md) for detailed instructions.
+
+### Quick Start:
+
+1. **Install Kaggle API**:
+   ```bash
+   pip install kaggle
+   ```
+
+2. **Set up credentials** (download `kaggle.json` from your Kaggle account):
+   ```bash
+   mkdir -p ~/.kaggle
+   cp kaggle.json ~/.kaggle/
+   chmod 600 ~/.kaggle/kaggle.json
+   ```
+
+3. **Download a dataset**:
+   ```bash
+   cd server/api-server/datasets
+   node download-dataset.js vendor-management
+   ```
+
+4. **Process the dataset**:
+   ```bash
+   node process-dataset.js raw/vendor-data.csv
+   ```
+
+5. **Use in application**:
+   - Access via API: `GET /datasets/training`
+   - Seed database: `POST /datasets/seed`
+   - Get benchmark: `GET /datasets/benchmark`
+
+The processed datasets will be used for:
+- Training risk scoring models
+- Validating extraction accuracy
+- Benchmarking system performance
+- Populating test data
+
 ## Usage
 
 1. **Upload Document**: Click "Upload Document" and select a PDF file
@@ -124,7 +171,7 @@ Upload a document and extract vendor fields.
 ```
 
 ### POST /risk/score
-Calculate risk score for extracted fields.
+Calculate risk score for extracted fields using AI-powered algorithmic analysis (primary) or rule-based scoring (fallback).
 
 **Request:**
 ```json
@@ -134,9 +181,12 @@ Calculate risk score for extracted fields.
     "registrationNo": "98-7654321",
     "address": "123 Main St. Springfield, IL 62701",
     "entityType": "Limited Liability Company"
-  }
+  },
+  "documentText": "optional: original document text for context"
 }
 ```
+
+**Note:** If OpenAI API key is available, the system uses AI-powered algorithmic risk analysis that considers multiple weighted factors (information completeness, document authenticity, business legitimacy, watchlist status, data quality). If OpenAI is unavailable, it falls back to rule-based scoring.
 
 **Response:**
 ```json
@@ -271,4 +321,3 @@ HackUtd_GS_IntelliBoard_Project2025/
 ## License
 
 Prototype for HackUTD 2025
-

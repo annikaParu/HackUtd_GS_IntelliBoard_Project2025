@@ -11,6 +11,7 @@ import { db, addActivity } from "./memorydb.js";
 import { extractTextFromUpload } from "./text-extract.js";
 import { llmExtractFieldsJSON, llmExtractFieldsJSONLegacy, llmAnswer, isOpenAIReady, llmAnalyzeRisk } from "./llm.js";
 import { checkWatchlist } from "./watchlist.js";
+import { detectPII, maskPII, getPIIRiskSummary, getPIIRecommendations } from "./privacy.js";
 
 const app = express();
 app.use(cors({ origin: true }));
@@ -103,6 +104,13 @@ app.post("/extract", upload.single("file"), async (req, res) => {
       at: new Date().toISOString()
     });
 
+    // Detect PII in the extracted text
+    console.log(`🔒 Scanning for PII in document...`);
+    const detectedPII = detectPII(text);
+    const piiSummary = getPIIRiskSummary(detectedPII);
+    const piiRecommendations = getPIIRecommendations(detectedPII);
+    console.log(`🔒 PII Detection: ${detectedPII.length} items found (${piiSummary.high} high, ${piiSummary.medium} medium, ${piiSummary.low} low risk)`);
+
     // Extract fields using LLM (works offline, escalates to OpenAI if available)
     console.log(`🤖 Extracting fields using ${isOpenAIReady() ? "OpenAI" : "offline regex"}...`);
     const extracted = await llmExtractFieldsJSON(text);
@@ -128,7 +136,9 @@ app.post("/extract", upload.single("file"), async (req, res) => {
       payload: { 
         fileId, 
         extracted: normalizedExtracted, 
-        method: isOpenAIReady() ? "openai" : "offline" 
+        method: isOpenAIReady() ? "openai" : "offline",
+        piiDetected: detectedPII.length > 0,
+        piiCount: detectedPII.length
       },
       at: new Date().toISOString()
     });
@@ -136,7 +146,14 @@ app.post("/extract", upload.single("file"), async (req, res) => {
     res.json({
       fileId,
       filename: req.file.originalname,
-      extracted: normalizedExtracted
+      extracted: normalizedExtracted,
+      documentText: text, // Include document text for risk analysis
+      pii: {
+        detected: detectedPII,
+        summary: piiSummary,
+        recommendations: piiRecommendations,
+        maskedText: maskPII(text, detectedPII, false) // Mask only high-risk by default
+      }
     });
   } catch (e) {
     console.error("❌ Extract error:", e);
@@ -184,15 +201,32 @@ app.post("/risk/score", async (req, res) => {
       console.log("⚠️  OpenAI not available - cannot use AI risk analysis");
     }
 
-    // FALLBACK ONLY: Use rule-based scoring if OpenAI not available or failed
+    // FALLBACK ONLY: Use weighted rule-based scoring if OpenAI not available or failed
     if (!result) {
-      console.log("📊 Using rule-based risk scoring (fallback method)...");
-      result = scoreRisk(fields);
-      result.method = "rule-based";
-      console.log(`📊 Rule-based score: ${result.score}, Band: ${result.band}`);
+      console.log("📊 Using weighted risk scoring (fallback method)...");
+      result = scoreRisk(fields, documentText);
+      result.method = "weighted-scoring";
+      console.log(`📊 Weighted score: ${result.score}/100, Band: ${result.band}`);
+      if (result.breakdown) {
+        console.log(`   Breakdown: Compliance ${result.breakdown.compliance.score}/${result.breakdown.compliance.max}, Financial ${result.breakdown.financial.score}/${result.breakdown.financial.max}, Operational ${result.breakdown.operational.score}/${result.breakdown.operational.max}, Reputational ${result.breakdown.reputational.score}/${result.breakdown.reputational.max}`);
+      }
       console.log("   ⚠️  To use AI-powered scoring, set a valid OPENAI_API_KEY in .env");
     } else {
       result.method = "ai-algorithmic";
+      // Ensure AI result also uses weighted format if it doesn't have breakdown
+      if (!result.breakdown) {
+        // Convert AI score to weighted format (assuming AI returns higher = higher risk)
+        // Invert if needed: if AI score is 0-100 where higher = higher risk, keep it
+        // But ensure band matches: 0-33 Low, 34-66 Medium, 67-100 High
+        const aiScore = result.score;
+        if (aiScore <= 33) {
+          result.band = "Low";
+        } else if (aiScore <= 66) {
+          result.band = "Medium";
+        } else {
+          result.band = "High";
+        }
+      }
     }
 
     addActivity({
@@ -236,4 +270,5 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`🚀 IntelliBoard API listening on http://localhost:${PORT}`);
   console.log(`📊 OpenAI available: ${isOpenAIReady() ? "✅ Yes" : "❌ No (offline mode)"}`);
+  console.log(`🔒 Privacy Module: ✅ PII Detection & Masking Enabled`);
 });

@@ -190,36 +190,53 @@ export async function llmAnalyzeRisk(fields, documentText = null, watchlistInfo 
   try {
     const { businessName, registrationNo, address, entityType } = fields || {};
 
-    const system = `You are an expert risk analyst for vendor onboarding and due diligence. Your task is to DESIGN YOUR OWN ALGORITHM to determine the trustworthiness and risk level of a vendor.
+    const system = `You are an expert risk analyst for vendor onboarding and due diligence. Calculate a weighted risk score using the following formula:
 
-**CRITICAL: You must create your own algorithmic approach. Do NOT follow a template or hard-coded rules.**
+**REQUIRED WEIGHTED FORMULA (must total 100 points):**
+1. **Compliance Verification (40% weight, 0-40 points)**: Check if all required documents pass validation
+   - Registration number format and validity
+   - Address completeness and verification
+   - Business name presence
+   - Entity type specification
+   - Lower points = better compliance
 
-Analyze the vendor information and:
-1. **Design your own risk assessment algorithm** - determine what factors matter most for THIS specific vendor
-2. **Calculate a risk score (0-100)** where higher scores = higher risk, lower scores = lower risk (more trustworthy)
-3. **Use your own reasoning** - consider patterns, inconsistencies, completeness, legitimacy signals, watchlist status, and any other factors YOU determine are relevant
-4. **Be creative and nuanced** - don't just check boxes, actually reason about the data
-5. **Consider interrelationships** - how do the fields relate to each other? Are there inconsistencies?
-6. **Weight factors dynamically** - what matters most for THIS vendor might be different than another
+2. **Financial Health (25% weight, 0-25 points)**: Analyze financial statements and credit data
+   - Revenue indicators
+   - Profitability signals
+   - Loss or bankruptcy indicators
+   - Financial statement completeness
+   - Lower points = better financial health
 
-**Your algorithm should:**
-- Start from scratch for each vendor (no fixed baseline)
-- Identify what's most important for THIS specific case
-- Consider context from document text if provided
-- Detect subtle red flags or positive signals
-- Provide detailed reasoning for your score
+3. **Operational Risk (20% weight, 0-20 points)**: Assess geographic location and industry factors
+   - Country/region risk tier
+   - Industry sector risk profile
+   - Lower points = lower operational risk
+
+4. **Reputational Risk (15% weight, 0-15 points)**: Evaluate public records and legal issues
+   - Watchlist/sanctions matches
+   - Legal proceedings or violations
+   - Regulatory penalties
+   - Lower points = better reputation
+
+**SCORING RULES:**
+- Calculate a risk score from 0-100 where LOWER scores = LOWER risk (more trustworthy)
+- Total must equal: Compliance (0-40) + Financial (0-25) + Operational (0-20) + Reputational (0-15)
+- Risk bands: 0-33 = Low Risk (green), 34-66 = Medium Risk (yellow), 67-100 = High Risk (red)
 
 Return ONLY a valid JSON object:
 {
-  "score": <number 0-100, YOUR algorithmic calculation, where higher = higher risk>,
-  "band": "Low" | "Medium" | "High" (0-30=Low risk, 31-60=Medium risk, 61-100=High risk),
-  "reasons": [<array of strings explaining YOUR algorithmic reasoning - be specific about how YOU calculated this>],
+  "score": <number 0-100, weighted total where lower = lower risk>,
+  "band": "Low" | "Medium" | "High" (0-33=Low, 34-66=Medium, 67-100=High),
+  "reasons": [<array of strings explaining how each category contributed to the score>],
   "checks": [
-    {"label": "<what YOU checked>", "status": "ok" | "warn" | "fail"}
+    {"label": "<compliance check>", "status": "ok" | "warn" | "fail"},
+    {"label": "<financial check>", "status": "ok" | "warn" | "fail"},
+    {"label": "<operational check>", "status": "ok" | "warn" | "fail"},
+    {"label": "<reputational check>", "status": "ok" | "warn" | "fail"}
   ]
 }
 
-The "reasons" should explain YOUR algorithm - what factors YOU considered, how YOU weighted them, and why YOU arrived at this specific score. Be detailed and specific.`;
+The "reasons" should explain how you calculated each category's contribution to the final weighted score.`;
 
     const watchlistSection = watchlistInfo 
       ? `\n**Watchlist Status:** ${watchlistInfo.isListed ? `⚠️ LISTED - Matches: ${watchlistInfo.matches.join(", ")}` : "✅ Not listed in watchlists"}`
@@ -284,11 +301,11 @@ Think like a risk analyst would - what would make YOU trust or distrust this ven
     // Validate and normalize the response - but preserve LLM's algorithmic reasoning
     const score = Math.max(0, Math.min(100, parsed.score || 50));
     // Let LLM determine the band, but validate it
-    // Higher score = Higher risk, so: 0-30 = Low, 31-60 = Medium, 61-100 = High
+    // Lower score = Lower risk, so: 0-33 = Low, 34-66 = Medium, 67-100 = High
     let band = parsed.band;
     if (!band || !["Low", "Medium", "High"].includes(band)) {
       // Only fallback to auto-calculation if LLM didn't provide band
-      band = score <= 30 ? "Low" : score <= 60 ? "Medium" : "High";
+      band = score <= 33 ? "Low" : score <= 66 ? "Medium" : "High";
     }
     const reasons = Array.isArray(parsed.reasons) ? parsed.reasons : [];
     const checks = Array.isArray(parsed.checks) ? parsed.checks : [];

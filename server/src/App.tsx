@@ -1,5 +1,32 @@
 import { useState, useEffect } from 'react'
 import './App.css'
+import AnimatedCounter from './components/AnimatedCounter'
+import ScrollReveal from './components/ScrollReveal'
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
+import { 
+  MdHome, 
+  MdCheckCircle, 
+  MdFlag, 
+  MdFolder, 
+  MdPerson,
+  MdClose,
+  MdWarning,
+  MdCheckCircleOutline,
+  MdSchedule,
+  MdBusiness,
+  MdPersonOutline,
+  MdBarChart,
+  MdAssignment,
+  MdFileUpload,
+  MdDelete,
+  MdInfo
+} from 'react-icons/md'
+import { 
+  HiCheckCircle, 
+  HiXCircle, 
+  HiExclamationCircle,
+  HiClock
+} from 'react-icons/hi'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000'
 
@@ -15,6 +42,30 @@ interface RiskResult {
   band: string
   reasons: string[]
   checks: Array<{ label: string; status: 'ok' | 'warn' | 'fail' }>
+}
+
+interface PIIItem {
+  type: string
+  value: string
+  maskedValue: string
+  position: number
+  length: number
+  risk: 'high' | 'medium' | 'low'
+  context: string
+}
+
+interface PIIData {
+  detected: PIIItem[]
+  summary: {
+    total: number
+    high: number
+    medium: number
+    low: number
+    overallRisk: 'high' | 'medium' | 'low' | 'none'
+    byType: Record<string, number>
+  }
+  recommendations: string[]
+  maskedText: string
 }
 
 interface ActivityEvent {
@@ -55,6 +106,8 @@ function App() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [extracted, setExtracted] = useState<ExtractedFields | null>(null)
   const [riskResult, setRiskResult] = useState<RiskResult | null>(null)
+  const [piiData, setPiiData] = useState<PIIData | null>(null)
+  const [showMaskedText, setShowMaskedText] = useState(false)
   const [loading, setLoading] = useState(false)
   const [activities, setActivities] = useState<ActivityEvent[]>([])
   const [vendors, setVendors] = useState<Vendor[]>([])
@@ -114,8 +167,14 @@ function App() {
     if (!file) return
 
     // Validate file type
-    if (!file.type.includes('pdf') && !file.name.endsWith('.pdf')) {
-      setError('Please upload a PDF file')
+    const isValidFile = 
+      file.type.includes('pdf') || 
+      file.name.endsWith('.pdf') || 
+      file.type.includes('text') || 
+      file.name.endsWith('.txt')
+    
+    if (!isValidFile) {
+      setError('Please upload a PDF or TXT file')
       return
     }
 
@@ -158,6 +217,18 @@ function App() {
       }
 
       setExtracted(extracted)
+      
+      // Store PII data if available
+      if (data.pii) {
+        setPiiData(data.pii)
+        console.log('🔒 PII Detection:', data.pii.summary)
+        if (data.pii.summary.total > 0) {
+          console.warn(`⚠️ ${data.pii.summary.total} PII items detected (${data.pii.summary.high} high risk)`)
+        }
+      } else {
+        setPiiData(null)
+      }
+      
       // Use business name if found, otherwise use filename without extension
       const fileName = file.name.replace(/\.[^/.]+$/, '')
       setVendorName(extracted.businessName || fileName || 'AI Manager')
@@ -165,19 +236,23 @@ function App() {
       // Show success message
       console.log('✅ Fields extracted:', extracted)
       
-      // Automatically calculate risk score after extraction
-      console.log('🤖 Automatically calculating risk score...')
+      // Automatically calculate risk score after extraction with document text
+      console.log('🤖 Automatically calculating weighted risk score...')
       try {
         const riskRes = await fetch(`${API_URL}/risk/score`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fields: extracted })
+          body: JSON.stringify({ 
+            fields: extracted,
+            documentText: data.documentText || '' // Pass document text for weighted analysis
+          })
         })
 
         if (riskRes.ok) {
           const riskData = await riskRes.json()
-          setRiskResult(riskData)
           console.log('✅ Risk score calculated:', riskData)
+          console.log('📊 Risk Score:', riskData.score, 'Trust Score:', getTrustScore(riskData.score))
+          setRiskResult(riskData)
         } else {
           console.warn('⚠️ Risk scoring failed, but extraction succeeded')
         }
@@ -245,6 +320,8 @@ function App() {
     setUploadedFile(null)
     setExtracted(null)
     setRiskResult(null)
+    setPiiData(null)
+    setShowMaskedText(false)
     setError(null)
     setActiveTab('Draft')
     setVendorName('AI Manager')
@@ -282,7 +359,7 @@ function App() {
     setExtracted({ ...extracted, [field]: value })
   }
 
-  const getRiskColor = (band: string) => {
+  const getRiskColorClass = (band: string) => {
     if (band === 'Low') return 'text-green-600'
     if (band === 'Medium') return 'text-yellow-600'
     return 'text-red-600'
@@ -301,6 +378,19 @@ function App() {
     return 100 - riskScore
   }
 
+  const getRiskColor = (score: number): string => {
+    // Lower score = lower risk (green), higher score = higher risk (red)
+    if (score <= 33) return '#10b981' // Green - Low Risk
+    if (score <= 66) return '#f59e0b' // Yellow - Medium Risk
+    return '#ef4444' // Red - High Risk
+  }
+
+  const getRiskBand = (score: number): 'Low' | 'Medium' | 'High' => {
+    if (score <= 33) return 'Low'
+    if (score <= 66) return 'Medium'
+    return 'High'
+  }
+
   const formatActivityMessage = (activity: ActivityEvent) => {
     if (activity.payload?.msg) {
       return activity.payload.msg
@@ -314,88 +404,400 @@ function App() {
     return `${activity.type}: ${JSON.stringify(activity.payload).slice(0, 50)}`
   }
 
+  // Premium Section Render Functions
+  const renderExecutiveSummary = () => {
+    // Risk score: 0-100 where LOWER = LOWER risk (more trustworthy)
+    // Low Risk = 0-33, Medium Risk = 34-66, High Risk = 67-100
+    // Include all vendors: approved (low risk), pending, and flagged
+    const allVendors = [
+      ...vendors,
+      ...approvedVendors.map(v => ({ ...v, risk: v.riskResult?.score || 15 })),
+      ...flaggedVendors.map(v => ({ ...v, risk: v.riskResult?.score || 85 }))
+    ];
+    const compliantCount = allVendors.filter(v => (v.risk || 0) <= 33).length;
+    const totalVendors = allVendors.length;
+    const complianceRate = totalVendors > 0 ? Math.round((compliantCount / totalVendors) * 100) : 100;
+    const avgRisk = totalVendors > 0 
+      ? Math.round(allVendors.reduce((sum, v) => sum + (v.risk || 0), 0) / totalVendors)
+      : 0;
+    const overallRisk: 'Low' | 'Medium' | 'High' | 'N/A' = totalVendors === 0 ? 'N/A' : 
+      avgRisk <= 33 ? 'Low' : avgRisk <= 66 ? 'Medium' : 'High';
+
+    return (
+      <ScrollReveal>
+        <div className="executive-summary">
+          <div className="executive-summary-header">
+            <h3 className="executive-summary-title">Executive Summary</h3>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <div className="status-badge status-badge-monitoring">
+                <span className="status-badge-dot"></span>
+                <span>LIVE MONITORING</span>
+              </div>
+              <div className="status-badge status-badge-ai">
+                <span className="status-badge-dot"></span>
+                <span>AI-POWERED</span>
+              </div>
+            </div>
+          </div>
+          <div className="executive-summary-grid">
+            <div className="executive-summary-item">
+              <div className="executive-summary-label">Compliance Rate</div>
+              <div className="executive-summary-value">
+                <AnimatedCounter value={complianceRate} suffix="%" className="stats-number" style={{ color: '#10b981' }} />
+                <span className="trend-arrow up">^</span>
+              </div>
+            </div>
+            <div className="executive-summary-item">
+              <div className="executive-summary-label">Active Vendors</div>
+              <div className="executive-summary-value">
+                <AnimatedCounter value={totalVendors} className="stats-number" />
+              </div>
+            </div>
+            <div className="executive-summary-item">
+              <div className="executive-summary-label">Avg Review Time</div>
+              <div className="executive-summary-value">
+                <AnimatedCounter value={24} suffix="h" className="stats-number" />
+                <span className="trend-arrow up">^</span>
+              </div>
+            </div>
+            <div className="executive-summary-item">
+              <div className="executive-summary-label">Overall Risk</div>
+              <div className="executive-summary-value" style={{ color: overallRisk === 'Low' ? '#10b981' : overallRisk === 'Medium' ? '#f59e0b' : '#ef4444' }}>
+                {overallRisk}
+              </div>
+            </div>
+          </div>
+        </div>
+      </ScrollReveal>
+    );
+  };
+
+  const renderComplianceStatus = () => {
+    // Risk score: 0-100 where LOWER = LOWER risk (more trustworthy)
+    // Low Risk = 0-33, Medium Risk = 34-66, High Risk = 67-100
+    // Include all vendors: approved (low risk), pending, and flagged
+    const allVendors = [
+      ...vendors,
+      ...approvedVendors.map(v => ({ ...v, risk: v.riskResult?.score || 15 })),
+      ...flaggedVendors.map(v => ({ ...v, risk: v.riskResult?.score || 85 }))
+    ];
+    const compliant = allVendors.filter(v => (v.risk || 0) <= 33).length;
+    const underReview = allVendors.filter(v => (v.risk || 0) > 33 && (v.risk || 0) <= 66).length;
+    const nonCompliant = allVendors.filter(v => (v.risk || 0) > 66).length;
+    const total = allVendors.length;
+
+    return (
+      <ScrollReveal delay={100}>
+        <div className="compliance-status-section">
+          <h3 className="compliance-status-title">Real-Time Compliance Status</h3>
+          <div className="compliance-status-grid">
+            <div className="compliance-status-card">
+              <div className="compliance-status-number">
+                <AnimatedCounter value={compliant} className="stats-number" />
+                {compliant > 0 && <span className="compliance-status-dot"></span>}
+              </div>
+              <div className="compliance-status-label">Compliant Vendors</div>
+            </div>
+            <div className="compliance-status-card">
+              <div className="compliance-status-number">
+                <AnimatedCounter value={underReview} className="stats-number" />
+              </div>
+              <div className="compliance-status-label">Under Review</div>
+            </div>
+            <div className="compliance-status-card">
+              <div className="compliance-status-number">
+                <AnimatedCounter value={nonCompliant} className="stats-number" />
+              </div>
+              <div className="compliance-status-label">Non-Compliant</div>
+            </div>
+            <div className="compliance-status-card">
+              <div className="compliance-status-number">
+                <AnimatedCounter value={total} className="stats-number" />
+              </div>
+              <div className="compliance-status-label">Total Vendors</div>
+            </div>
+          </div>
+        </div>
+      </ScrollReveal>
+    );
+  };
+
+  const renderRiskSpeedometer = () => {
+    // Include all vendors: approved (low risk), pending, and flagged
+    const allVendors = [
+      ...vendors,
+      ...approvedVendors.map(v => ({ ...v, risk: v.riskResult?.score || 15 })),
+      ...flaggedVendors.map(v => ({ ...v, risk: v.riskResult?.score || 85 }))
+    ];
+    const avgRisk = allVendors.length > 0 
+      ? Math.round(allVendors.reduce((sum, v) => sum + (v.risk || 0), 0) / allVendors.length)
+      : 28;
+    
+    let riskBand: string;
+    let riskColor: string;
+    if (avgRisk <= 33) {
+      riskBand = 'Low';
+      riskColor = '#10b981';
+    } else if (avgRisk <= 66) {
+      riskBand = 'Medium';
+      riskColor = '#f59e0b';
+    } else {
+      riskBand = 'High';
+      riskColor = '#ef4444';
+    }
+
+    const angle = (avgRisk / 100) * 180 - 90;
+
+    return (
+      <ScrollReveal delay={200}>
+        <div className="risk-dashboard">
+          <h3 className="risk-dashboard-title">Risk Score Dashboard</h3>
+          <div className="risk-gauge-container">
+            <div className="risk-speedometer">
+              <svg viewBox="0 0 200 120" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" style={{ maxWidth: '280px', maxHeight: '160px', overflow: 'visible' }}>
+                <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#f3f4f6" strokeWidth="14" strokeLinecap="round" />
+                <path d="M 20 100 A 80 80 0 0 1 72.8 100" fill="none" stroke="#10b981" strokeWidth="14" strokeLinecap="round" />
+                <path d="M 72.8 100 A 80 80 0 0 1 125.6 100" fill="none" stroke="#f59e0b" strokeWidth="14" strokeLinecap="round" />
+                <path d="M 125.6 100 A 80 80 0 0 1 180 100" fill="none" stroke="#ef4444" strokeWidth="14" strokeLinecap="round" />
+                <line
+                  x1="100" y1="100"
+                  x2={100 + 70 * Math.cos((angle * Math.PI) / 180)}
+                  y2={100 + 70 * Math.sin((angle * Math.PI) / 180)}
+                  stroke={riskColor} strokeWidth="4" strokeLinecap="round"
+                  style={{ transition: 'all 1s ease' }}
+                />
+                <circle cx="100" cy="100" r="6" fill={riskColor} stroke="white" strokeWidth="2" />
+              </svg>
+              <div className="risk-gauge-display">
+                <div className="risk-gauge-score">
+                  <AnimatedCounter value={avgRisk} />
+                </div>
+                <div className="risk-gauge-label" style={{ color: riskColor }}>
+                  {riskBand} Risk
+                </div>
+              </div>
+            </div>
+            <div className="risk-legend">
+              <div className="risk-legend-item">
+                <div className="risk-legend-color low"></div>
+                <span>Low (0-33)</span>
+              </div>
+              <div className="risk-legend-item">
+                <div className="risk-legend-color medium"></div>
+                <span>Med (34-66)</span>
+              </div>
+              <div className="risk-legend-item">
+                <div className="risk-legend-color high"></div>
+                <span>High (67-100)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </ScrollReveal>
+    );
+  };
+
+  const renderComplianceTrend = () => {
+    const trendData = [
+      { month: 'Jan', compliance: 85 },
+      { month: 'Feb', compliance: 87 },
+      { month: 'Mar', compliance: 89 },
+      { month: 'Apr', compliance: 91 },
+      { month: 'May', compliance: 92 },
+      { month: 'Jun', compliance: 94 },
+    ];
+
+    return (
+      <ScrollReveal delay={300}>
+        <div className="compliance-trend">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <h3 className="compliance-trend-title">Compliance Trend Analysis</h3>
+            <div className="status-badge status-badge-ai">
+              <span className="status-badge-dot"></span>
+              <span>AI-POWERED</span>
+            </div>
+          </div>
+          <div className="chart-wrapper">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={trendData}>
+                <defs>
+                  <linearGradient id="colorCompliance" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#4a90e2" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#4a90e2" stopOpacity={0.1}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis dataKey="month" stroke="#6b7280" />
+                <YAxis stroke="#6b7280" domain={[0, 100]} />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: '#1f2937', 
+                    border: 'none', 
+                    borderRadius: '8px',
+                    color: '#fff'
+                  }}
+                />
+                <Area 
+                  type="monotone" 
+                  dataKey="compliance" 
+                  stroke="#4a90e2" 
+                  strokeWidth={3}
+                  fill="url(#colorCompliance)"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ marginTop: '12px', textAlign: 'right' }}>
+            <span style={{ color: '#10b981', fontWeight: 700, fontSize: '14px' }}>↑23%</span>
+          </div>
+        </div>
+      </ScrollReveal>
+    );
+  };
+
+  const renderComplianceRequirements = () => {
+    const requirements = [
+      { name: 'Business Registration Verification', complete: true },
+      { name: 'Address Validation', complete: true },
+      { name: 'Sanctions & Watchlist Screening', complete: true },
+      { name: 'Risk Assessment', complete: true },
+    ];
+
+    const completed = requirements.filter(r => r.complete).length;
+    const percentage = (completed / requirements.length) * 100;
+
+    return (
+      <ScrollReveal delay={400}>
+        <div className="compliance-requirements">
+          <div className="compliance-progress-header">
+            <div className="compliance-progress-label">Compliance Requirements</div>
+            <div className="compliance-progress-percentage">
+              <AnimatedCounter value={percentage} suffix="% Complete" />
+            </div>
+          </div>
+          <div className="compliance-progress-bar">
+            <div 
+              className="compliance-progress-fill"
+              style={{ width: `${percentage}%` }}
+            ></div>
+          </div>
+          <div className="compliance-requirements-list">
+            {requirements.map((req, idx) => (
+              <div key={idx} className="compliance-requirement-item">
+                <div className="compliance-checkmark-badge"><HiCheckCircle /></div>
+                <div className="compliance-requirement-text">{req.name}</div>
+                <div className="compliance-requirement-status">COMPLETE</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </ScrollReveal>
+    );
+  };
+
   // Render different views
   const renderHomeView = () => (
     <>
-      <div className="vendor-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-        <h2 className="vendor-title">{vendorName}</h2>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button 
-              className={`entity-toggle-btn ${entityType === 'vendor' ? 'active' : ''}`}
-              onClick={() => setEntityType('vendor')}
-            >
-              🏢 Vendor
-            </button>
-            <button 
-              className={`entity-toggle-btn ${entityType === 'client' ? 'active' : ''}`}
-              onClick={() => setEntityType('client')}
-            >
-              👤 Client
-            </button>
-          </div>
-        </div>
-        <button className="smarter-trust-btn">Smarter Trust</button>
+      {/* Centered Upload Section */}
+      <div className="upload-hero-section">
+        <div className="upload-hero-card">
+          <div className="upload-hero-header">
+            <h2 className="upload-hero-title">Upload Document</h2>
+            <p className="upload-hero-subtitle">Start your vendor onboarding process by uploading a document</p>
       </div>
 
-      {/* Tabs */}
-      <div className="tabs">
-        {['Draft', 'AI Review', 'Compliance Check'].map(tab => (
+          <div className="vendor-header-inline">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <h3 className="vendor-title-small">{vendorName}</h3>
+              <div style={{ display: 'flex', gap: '8px' }}>
           <button
-            key={tab}
-            className={`tab ${activeTab === tab ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab)}
+                  className={`entity-toggle-btn-small ${entityType === 'vendor' ? 'active' : ''}`}
+                  onClick={() => setEntityType('vendor')}
           >
-            {tab}
+                  <MdBusiness style={{ marginRight: '4px', fontSize: '16px' }} /> Vendor
           </button>
-        ))}
+                <button 
+                  className={`entity-toggle-btn-small ${entityType === 'client' ? 'active' : ''}`}
+                  onClick={() => setEntityType('client')}
+                >
+                  <MdPersonOutline style={{ marginRight: '4px', fontSize: '16px' }} /> Client
+                </button>
+              </div>
+            </div>
       </div>
 
-      {/* Tab Content */}
-      {activeTab === 'Draft' && (
-        <>
           {error && (
             <div className="error-message">
-              ⚠️ {error}
+              <MdWarning style={{ marginRight: '8px', fontSize: '20px' }} /> {error}
             </div>
           )}
 
-      <div className="card">
             {uploadedFile ? (
-              <div className="uploaded-doc">
-                <div className="doc-icon">✓</div>
-                <div>
-                  <div className="doc-name">{uploadedFile.name}</div>
-                  <div className="doc-status">Uploaded</div>
+            <div className="uploaded-doc-hero">
+              <MdCheckCircleOutline className="doc-icon-hero" />
+              <div className="uploaded-doc-content">
+                <div className="doc-name-hero">{uploadedFile.name}</div>
+                <div className="doc-status-hero">Document uploaded successfully</div>
                 </div>
-                <button 
-                  className="btn-remove"
-                  onClick={handleRemoveFile}
-                  title="Remove file and start over"
-                >
-                  ✕ Remove
-                </button>
+              <button 
+                className="btn-remove-hero"
+                onClick={handleRemoveFile}
+                title="Remove file and start over"
+              >
+                <MdClose style={{ marginRight: '4px' }} /> Remove
+              </button>
               </div>
             ) : (
-              <div className="upload-area">
+            <div 
+              className="upload-area-hero"
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                const file = e.dataTransfer.files[0]
+                if (file) {
+                  const input = document.getElementById('file-upload') as HTMLInputElement
+                  if (input) {
+                    const dataTransfer = new DataTransfer()
+                    dataTransfer.items.add(file)
+                    input.files = dataTransfer.files
+                    const event = new Event('change', { bubbles: true })
+                    input.dispatchEvent(event)
+                  }
+                }
+              }}
+            >
                 <input
                   type="file"
                   id="file-upload"
-                  accept=".pdf,.txt"
+                accept=".pdf,.txt,application/pdf,text/plain"
                   onChange={handleFileUpload}
                   className="file-input"
                   disabled={loading}
                 />
-                <label htmlFor="file-upload" className="upload-label">
-                  {loading ? '⏳ Processing...' : '📄 Upload Document'}
+              <label htmlFor="file-upload" className="upload-label-hero">
+                {loading ? (
+                  <>
+                    <MdSchedule className="upload-icon-hero" /> 
+                    <span>Processing your document...</span>
+                  </>
+                ) : (
+                  <>
+                    <MdFileUpload className="upload-icon-hero" /> 
+                    <span>Click to upload or drag and drop</span>
+                    <span className="upload-subtext">PDF or TXT files only</span>
+                  </>
+                )}
                 </label>
-                <p className="upload-hint">PDF or TXT files only</p>
               </div>
             )}
 
             {extracted && (
-              <div className="extracted-section">
-                <h3 className="section-title">AI-Extracted Information</h3>
+            <div className="extracted-section-hero">
+              <h3 className="section-title-hero">AI-Extracted Information</h3>
                 <div className="fields-table">
                   <div className="field-row">
                     <label>Business Name</label>
@@ -441,73 +843,224 @@ function App() {
               </div>
             )}
 
-            <div className="action-buttons">
-              {uploadedFile && (
-                <button 
-                  className="btn-remove"
-                  onClick={handleRemoveFile}
-                >
-                  ✕ Remove File
-                </button>
-              )}
-              <button className="btn-flag" onClick={handleFlagVendor} disabled={!extracted || !riskResult}>
-                Flag Vendor
+            {/* PII Detection Section */}
+            {piiData && piiData.summary.total > 0 && (
+              <div className="pii-detection-section">
+                <div className="pii-header">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <MdWarning style={{ color: piiData.summary.overallRisk === 'high' ? '#ef4444' : piiData.summary.overallRisk === 'medium' ? '#f59e0b' : '#6b7280', fontSize: '20px' }} />
+                    <h3 className="pii-title">PII Detection Alert</h3>
+                  </div>
+                  <div className={`pii-risk-badge ${piiData.summary.overallRisk}`}>
+                    {piiData.summary.overallRisk.toUpperCase()} RISK
+                  </div>
+                </div>
+                
+                <div className="pii-summary">
+                  <div className="pii-stat">
+                    <span className="pii-stat-value">{piiData.summary.total}</span>
+                    <span className="pii-stat-label">Total PII Items</span>
+                  </div>
+                  <div className="pii-stat">
+                    <span className="pii-stat-value" style={{ color: '#ef4444' }}>{piiData.summary.high}</span>
+                    <span className="pii-stat-label">High Risk</span>
+                  </div>
+                  <div className="pii-stat">
+                    <span className="pii-stat-value" style={{ color: '#f59e0b' }}>{piiData.summary.medium}</span>
+                    <span className="pii-stat-label">Medium Risk</span>
+                  </div>
+                  <div className="pii-stat">
+                    <span className="pii-stat-value" style={{ color: '#6b7280' }}>{piiData.summary.low}</span>
+                    <span className="pii-stat-label">Low Risk</span>
+                  </div>
+                </div>
+
+                <div className="pii-detected-items">
+                  <h4 className="pii-subtitle">Detected PII Items:</h4>
+                  <div className="pii-items-list">
+                    {piiData.detected.slice(0, 10).map((item, idx) => (
+                      <div key={idx} className={`pii-item pii-item-${item.risk}`}>
+                        <div className="pii-item-header">
+                          <span className="pii-item-type">{item.type}</span>
+                          <span className={`pii-item-risk pii-risk-${item.risk}`}>{item.risk.toUpperCase()}</span>
+                        </div>
+                        <div className="pii-item-content">
+                          <div className="pii-item-original">
+                            <span className="pii-label">Original:</span>
+                            <code className="pii-value">{item.value}</code>
+                          </div>
+                          <div className="pii-item-masked">
+                            <span className="pii-label">Masked:</span>
+                            <code className="pii-value-masked">{item.maskedValue}</code>
+                          </div>
+                        </div>
+                        {item.context && (
+                          <div className="pii-item-context">
+                            <span className="pii-context-label">Context:</span>
+                            <span className="pii-context-text">"{item.context}"</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {piiData.detected.length > 10 && (
+                      <div className="pii-more">+ {piiData.detected.length - 10} more items</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="pii-recommendations">
+                  <h4 className="pii-subtitle">Recommendations:</h4>
+                  <ul className="pii-recommendations-list">
+                    {piiData.recommendations.map((rec, idx) => (
+                      <li key={idx} className="pii-recommendation-item">{rec}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="pii-actions">
+                  <button 
+                    className="btn-mask-pii"
+                    onClick={() => setShowMaskedText(!showMaskedText)}
+                  >
+                    {showMaskedText ? 'Show Original Text' : 'View Masked Text'}
+                  </button>
+                </div>
+
+                {showMaskedText && piiData.maskedText && (
+                  <div className="pii-masked-text-container">
+                    <h4 className="pii-subtitle">Masked Document Text:</h4>
+                    <div className="pii-masked-text">
+                      <pre>{piiData.maskedText}</pre>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+          <div className="action-buttons-hero">
+            {uploadedFile && (
+              <button 
+                className="btn-remove-hero"
+                onClick={handleRemoveFile}
+              >
+                <MdDelete style={{ marginRight: '4px' }} /> Remove File
               </button>
+            )}
+            <button className="btn-flag" onClick={handleFlagVendor} disabled={!extracted || !riskResult}>
+              Flag Vendor
+            </button>
               <button
                 className="btn-approve"
                 onClick={handleApprove}
-                disabled={!extracted || !riskResult || loading}
+              disabled={!extracted || !riskResult || loading}
               >
-                {loading ? 'Processing...' : 'Approve & Proceed'}
+              {loading ? 'Processing...' : 'Approve & Proceed'}
         </button>
             </div>
           </div>
-        </>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs-container">
+        <div className="tabs">
+          {['Draft', 'AI Review', 'Compliance Check'].map(tab => (
+            <button
+              key={tab}
+              className={`tab ${activeTab === tab ? 'active' : ''}`}
+              onClick={() => setActiveTab(tab)}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tab Content */}
+      <div className="tab-content-wrapper">
+        {activeTab === 'Draft' && (
+          <div className="tab-content-card">
+            <div className="tab-content-empty">
+              <MdFileUpload className="tab-empty-icon" />
+              <h3 className="tab-empty-title">Ready to Upload</h3>
+              <p className="tab-empty-message">Use the upload section above to get started with document processing</p>
+            </div>
+          </div>
       )}
 
       {activeTab === 'AI Review' && (
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <h3 className="section-title">AI Review Results</h3>
-            {uploadedFile && (
-              <button 
-                className="btn-remove"
-                onClick={handleRemoveFile}
-                title="Remove file and start over"
-              >
-                ✕ Remove File / Start Over
-              </button>
-            )}
-          </div>
-          {riskResult ? (
-            <div className="review-content">
-              <div className="review-summary">
-                <div className="trust-score-container">
-                  <span className="trust-label">Trust Score:</span>
-                  <div className="trust-score-bar">
-                    <div 
-                      className="trust-score-fill" 
-                      style={{ width: `${getTrustScore(riskResult.score)}%` }}
-                    >
-                      {getTrustScore(riskResult.score)}%
+          <div className="tab-content-card">
+            <div className="tab-header">
+              <div>
+                <h3 className="tab-title">AI Review Results</h3>
+                <p className="tab-subtitle">AI-powered risk assessment and analysis</p>
+                </div>
+              {uploadedFile && (
+                <button 
+                  className="btn-remove-hero"
+                  onClick={handleRemoveFile}
+                  title="Remove file and start over"
+                >
+                  <MdDelete style={{ marginRight: '4px' }} /> Remove File / Start Over
+                </button>
+              )}
+            </div>
+            {riskResult ? (
+              <div className="review-content-hero">
+                <div className="review-summary-hero">
+                  <div className="trust-score-container-hero">
+                    <span className="trust-label-hero">Risk Score</span>
+                    <div className="risk-score-display-hero" style={{ 
+                      fontSize: '32px', 
+                      fontWeight: '700', 
+                      color: getRiskColor(riskResult.score),
+                      marginBottom: '8px'
+                    }}>
+                      {riskResult.score}/100
+                    </div>
+                    <div style={{ 
+                      fontSize: '14px', 
+                      fontWeight: '600', 
+                      color: getRiskColor(riskResult.score),
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
+                    }}>
+                      {getRiskBand(riskResult.score)} Risk
+                    </div>
+                    <div className="trust-score-bar-hero" style={{ marginTop: '16px' }}>
+                      <div 
+                        className="trust-score-fill-hero" 
+                        style={{ 
+                          width: `${riskResult.score}%`,
+                          background: `linear-gradient(90deg, ${getRiskColor(0)} 0%, ${getRiskColor(50)} 50%, ${getRiskColor(100)} 100%)`
+                        }}
+                      >
+                        <span className="trust-score-value" style={{ color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.3)' }}>
+                          {riskResult.score}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-              <div className="review-checks">
-                <h4>Assessment Checks</h4>
-                {riskResult.checks.map((check, idx) => (
-                  <div key={idx} className="review-check-item">
-                    <div className={`check-status ${getStatusColor(check.status)}`}>
-                      {check.status === 'ok' ? '✓' : check.status === 'warn' ? '?' : '✗'}
-                    </div>
-                    <span>{check.label}</span>
+                <div className="review-checks-hero">
+                  <h4 className="review-checks-title">Assessment Checks</h4>
+                  <div className="review-checks-grid">
+                    {riskResult.checks.map((check, idx) => (
+                      <div key={idx} className="review-check-item-hero">
+                        <div className={`check-status-hero ${getStatusColor(check.status)}`}>
+                          {check.status === 'ok' ? <HiCheckCircle /> : check.status === 'warn' ? <HiExclamationCircle /> : <HiXCircle />}
+                        </div>
+                        <span className="check-label-hero">{check.label}</span>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </div>
               </div>
-            </div>
-          ) : (
-            <p className="empty-state">No AI review available. Please upload a document to see the risk assessment.</p>
+            ) : (
+              <div className="tab-content-empty">
+                <MdInfo className="tab-empty-icon" />
+                <h3 className="tab-empty-title">No AI Review Available</h3>
+                <p className="tab-empty-message">Please upload a document to see the AI-powered risk assessment</p>
+              </div>
           )}
         </div>
       )}
@@ -515,27 +1068,33 @@ function App() {
       {activeTab === 'Compliance Check' && (
         <>
           {riskResult ? (
-            <div className="compliance-dashboard">
-              <div className="card">
-                <div className="compliance-header">
+            <div className="tab-content-card">
+              <div className="tab-header">
                   <div>
-                    <h3 className="section-title">Compliance Status</h3>
-                    <p className="compliance-subtitle">Regulatory compliance assessment for {vendorName}</p>
+                  <h3 className="tab-title">Compliance Check</h3>
+                  <p className="tab-subtitle">Regulatory compliance assessment for {vendorName}</p>
                   </div>
-                  <div className={`compliance-badge-large ${riskResult.score >= 80 ? 'compliant' : riskResult.score >= 50 ? 'review' : 'non-compliant'}`}>
-                    {riskResult.score >= 80 ? '✓ Compliant' : riskResult.score >= 50 ? '⚠ Review Required' : '✗ Non-Compliant'}
-                  </div>
+                  <div className={`compliance-badge-large ${riskResult.score <= 33 ? 'compliant' : riskResult.score <= 66 ? 'review' : 'non-compliant'}`}>
+                  {riskResult.score <= 33 ? (
+                    <> <HiCheckCircle style={{ marginRight: '6px' }} /> Low Risk</>
+                  ) : riskResult.score <= 66 ? (
+                    <> <MdWarning style={{ marginRight: '6px' }} /> Medium Risk</>
+                  ) : (
+                    <> <HiXCircle style={{ marginRight: '6px' }} /> High Risk</>
+                  )}
                 </div>
               </div>
+              
+              <div className="compliance-dashboard">
 
               <div className="compliance-grid">
                 <div className="card">
-                  <h4 className="compliance-section-title">📋 Regulatory Requirements</h4>
+                  <h4 className="compliance-section-title"><MdAssignment style={{ marginRight: '8px', verticalAlign: 'middle' }} /> Regulatory Requirements</h4>
                   <div className="requirements-list">
                     <div className={`requirement-item ${riskResult.checks.find(c => c.label.includes('Registration'))?.status === 'ok' ? 'passed' : 'pending'}`}>
                       <div className="requirement-header">
                         <span className="requirement-icon">
-                          {riskResult.checks.find(c => c.label.includes('Registration'))?.status === 'ok' ? '✓' : '⏳'}
+                          {riskResult.checks.find(c => c.label.includes('Registration'))?.status === 'ok' ? <HiCheckCircle /> : <HiClock />}
                         </span>
                         <span className="requirement-name">Business Registration</span>
                         <span className={`requirement-status ${riskResult.checks.find(c => c.label.includes('Registration'))?.status === 'ok' ? 'passed' : 'pending'}`}>
@@ -548,7 +1107,7 @@ function App() {
                     <div className={`requirement-item ${riskResult.checks.find(c => c.label.includes('Address'))?.status === 'ok' ? 'passed' : 'pending'}`}>
                       <div className="requirement-header">
                         <span className="requirement-icon">
-                          {riskResult.checks.find(c => c.label.includes('Address'))?.status === 'ok' ? '✓' : '⏳'}
+                          {riskResult.checks.find(c => c.label.includes('Address'))?.status === 'ok' ? <HiCheckCircle /> : <HiClock />}
                         </span>
                         <span className="requirement-name">Physical Address Verification</span>
                         <span className={`requirement-status ${riskResult.checks.find(c => c.label.includes('Address'))?.status === 'ok' ? 'passed' : 'pending'}`}>
@@ -561,7 +1120,7 @@ function App() {
                     <div className={`requirement-item ${riskResult.checks.find(c => c.label.includes('watchlist'))?.status === 'ok' ? 'passed' : 'failed'}`}>
                       <div className="requirement-header">
                         <span className="requirement-icon">
-                          {riskResult.checks.find(c => c.label.includes('watchlist'))?.status === 'ok' ? '✓' : '✗'}
+                          {riskResult.checks.find(c => c.label.includes('watchlist'))?.status === 'ok' ? <HiCheckCircle /> : <HiXCircle />}
                         </span>
                         <span className="requirement-name">Sanctions & Watchlist Check</span>
                         <span className={`requirement-status ${riskResult.checks.find(c => c.label.includes('watchlist'))?.status === 'ok' ? 'passed' : 'failed'}`}>
@@ -573,7 +1132,7 @@ function App() {
 
                     <div className="requirement-item pending">
                       <div className="requirement-header">
-                        <span className="requirement-icon">⏳</span>
+                        <span className="requirement-icon"><HiClock /></span>
                         <span className="requirement-name">Financial History Review</span>
                         <span className="requirement-status pending">Pending</span>
                       </div>
@@ -583,7 +1142,7 @@ function App() {
                 </div>
 
                 <div className="card">
-                  <h4 className="compliance-section-title">📊 Compliance Score Breakdown</h4>
+                  <h4 className="compliance-section-title"><MdBarChart style={{ marginRight: '8px', verticalAlign: 'middle' }} /> Compliance Score Breakdown</h4>
                   <div className="compliance-metrics">
                     <div className="metric-item">
                       <div className="metric-label">Overall Compliance</div>
@@ -600,10 +1159,26 @@ function App() {
                       <div className="metric-label">Documentation</div>
                       <div className="metric-bar-container">
                         <div 
-                          className="metric-bar high"
-                          style={{ width: `${extracted ? 85 : 0}%` }}
+                          className={`metric-bar ${(() => {
+                            if (!extracted) return 'low';
+                            const fields = [extracted.businessName, extracted.registrationNo, extracted.address, extracted.entityType];
+                            const filledFields = fields.filter(f => f && f.trim()).length;
+                            const completeness = (filledFields / fields.length) * 100;
+                            return completeness >= 80 ? 'high' : completeness >= 50 ? 'medium' : 'low';
+                          })()}`}
+                          style={{ width: `${(() => {
+                            if (!extracted) return 0;
+                            const fields = [extracted.businessName, extracted.registrationNo, extracted.address, extracted.entityType];
+                            const filledFields = fields.filter(f => f && f.trim()).length;
+                            return (filledFields / fields.length) * 100;
+                          })()}%` }}
                         >
-                          {extracted ? '85%' : '0%'}
+                          {(() => {
+                            if (!extracted) return '0%';
+                            const fields = [extracted.businessName, extracted.registrationNo, extracted.address, extracted.entityType];
+                            const filledFields = fields.filter(f => f && f.trim()).length;
+                            return `${Math.round((filledFields / fields.length) * 100)}%`;
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -611,10 +1186,10 @@ function App() {
                       <div className="metric-label">Risk Assessment</div>
                       <div className="metric-bar-container">
                         <div 
-                          className={`metric-bar ${riskResult.score <= 30 ? 'high' : riskResult.score <= 60 ? 'medium' : 'low'}`}
-                          style={{ width: `${riskResult.score}%` }}
+                          className={`metric-bar ${riskResult.score <= 33 ? 'high' : riskResult.score <= 66 ? 'medium' : 'low'}`}
+                          style={{ width: `${riskResult.score}%`, backgroundColor: getRiskColor(riskResult.score) }}
                         >
-                          {riskResult.score}%
+                          {riskResult.score}/100
                         </div>
                       </div>
                     </div>
@@ -761,23 +1336,23 @@ function App() {
                 </div>
 
                 <div className="card">
-                  <h4 className="compliance-section-title">📝 Compliance Notes & Actions</h4>
+                  <h4 className="compliance-section-title"><MdAssignment style={{ marginRight: '8px', verticalAlign: 'middle' }} /> Compliance Notes & Actions</h4>
                   <div className="compliance-actions">
                     <div className="action-item">
-                      <div className="action-icon">📋</div>
+                      <MdAssignment className="action-icon" />
                       <div className="action-content">
                         <div className="action-title">Next Steps</div>
                         <div className="action-description">
-                          {riskResult.score >= 80 
+                          {riskResult.score <= 33 
                             ? 'Vendor meets all compliance requirements. Ready for approval.'
-                            : riskResult.score >= 50
+                            : riskResult.score <= 66
                             ? 'Vendor requires manual review before final approval.'
                             : 'Vendor does not meet compliance requirements. Additional documentation needed.'}
                         </div>
                       </div>
                     </div>
                     <div className="action-item">
-                      <div className="action-icon">⏰</div>
+                      <MdSchedule className="action-icon" />
                       <div className="action-content">
                         <div className="action-title">Review Timeline</div>
                         <div className="action-description">
@@ -786,7 +1361,7 @@ function App() {
                       </div>
                     </div>
                     <div className="action-item">
-                      <div className="action-icon">👤</div>
+                      <MdPerson className="action-icon" />
                       <div className="action-content">
                         <div className="action-title">Reviewed By</div>
                         <div className="action-description">AI Compliance System</div>
@@ -794,33 +1369,46 @@ function App() {
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
-          ) : (
-            <div className="card">
-              <p className="empty-state">No compliance data available. Please complete AI Review first.</p>
-            </div>
-          )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+            <div className="tab-content-card">
+              <div className="tab-content-empty">
+                <MdAssignment className="tab-empty-icon" />
+                <h3 className="tab-empty-title">No Compliance Data Available</h3>
+                <p className="tab-empty-message">Please complete AI Review first to see compliance assessment results</p>
+                  </div>
+                </div>
+              )}
         </>
-      )}
-
-
+          )}
+        </div>
 
       {/* Activity Log */}
-      <div className="activity-log">
-        <h3 className="section-title">Activity Log</h3>
-        <div className="activity-list">
+      <div className="activity-log-hero">
+        <div className="activity-log-header">
+          <h3 className="activity-log-title">Activity Log</h3>
+          <p className="activity-log-subtitle">Recent system activities and vendor onboarding events</p>
+        </div>
+        <div className="activity-list-hero">
           {activities.length === 0 ? (
-            <div className="activity-item">No activities yet</div>
+            <div className="activity-empty-hero">
+              <MdAssignment className="activity-empty-icon" />
+              <div className="activity-empty-text">No activities yet</div>
+              <div className="activity-empty-hint">Activities will appear here as you interact with the system</div>
+            </div>
           ) : (
-            activities.slice(0, 5).map((activity) => (
-                  <div key={activity.id || activity.at || activity.t} className="activity-item">
-                    <span className="activity-time">
+            activities.slice(0, 10).map((activity) => (
+              <div key={activity.id || activity.at || activity.t} className="activity-item-hero">
+                <div className="activity-item-content">
+                  <span className="activity-time-hero">
                       {new Date(activity.at || activity.t || Date.now()).toLocaleTimeString()}
                     </span>
-                <span className="activity-msg">
+                  <span className="activity-msg-hero">
                   {formatActivityMessage(activity)}
                 </span>
+                </div>
               </div>
             ))
           )}
@@ -922,15 +1510,15 @@ function App() {
                 </div>
                 <div className="vendor-card-details">
                     <div className="vendor-detail">
-                    <span className="detail-icon">🏢</span>
+                    <MdBusiness className="detail-icon" />
                     <span>{vendor.extracted.businessName || 'N/A'}</span>
                     </div>
                     <div className="vendor-detail">
-                      <span className="detail-icon">📍</span>
+                      <MdInfo className="detail-icon" />
                     <span>{vendor.extracted.address || 'N/A'}</span>
                     </div>
                     <div className="vendor-detail">
-                    <span className="detail-icon">📅</span>
+                    <MdSchedule className="detail-icon" />
                     <span>Approved: {new Date(vendor.approvedAt).toLocaleDateString()}</span>
                     </div>
                 </div>
@@ -1153,24 +1741,28 @@ function App() {
                   <h3 className="vendor-card-name">{vendor.vendorName}</h3>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <div className={`entity-type-badge ${vendor.entityType}`}>
-                      {vendor.entityType === 'client' ? '👤 Client' : '🏢 Vendor'}
+                      {vendor.entityType === 'client' ? (
+                        <> <MdPersonOutline style={{ marginRight: '4px' }} /> Client</>
+                      ) : (
+                        <> <MdBusiness style={{ marginRight: '4px' }} /> Vendor</>
+                      )}
                     </div>
                     <div className={`vendor-status-badge flagged`}>
-                      🚩 Flagged
+                      <MdFlag style={{ marginRight: '4px' }} /> Flagged
                     </div>
                   </div>
                 </div>
                 <div className="vendor-card-details">
                   <div className="vendor-detail">
-                    <span className="detail-icon">🏢</span>
+                    <MdBusiness className="detail-icon" />
                     <span>{vendor.extracted.businessName || 'N/A'}</span>
                   </div>
                   <div className="vendor-detail">
-                    <span className="detail-icon">📍</span>
+                    <MdInfo className="detail-icon" />
                     <span>{vendor.extracted.address || 'N/A'}</span>
                   </div>
                   <div className="vendor-detail">
-                    <span className="detail-icon">📅</span>
+                    <MdSchedule className="detail-icon" />
                     <span>Flagged: {new Date(vendor.flaggedAt).toLocaleDateString()}</span>
                   </div>
                 </div>
@@ -1270,7 +1862,7 @@ function App() {
               </div>
               <div className="info-item">
                 <span className="info-label">Risk Score:</span>
-                <span className={`info-value ${vendor.risk && vendor.risk >= 80 ? 'low' : vendor.risk && vendor.risk >= 50 ? 'medium' : 'high'}`}>
+                <span className={`info-value ${vendor.risk && vendor.risk < 50 ? 'low' : vendor.risk && vendor.risk < 80 ? 'medium' : 'high'}`}>
                   {vendor.risk || 'N/A'}
                 </span>
               </div>
@@ -1297,7 +1889,7 @@ function App() {
                         <div className="phase-description">{phase.description}</div>
                       </div>
                       {isActive && <div className="phase-badge active">Current</div>}
-                      {isCompleted && <div className="phase-badge completed">✓</div>}
+                      {isCompleted && <div className="phase-badge completed"><HiCheckCircle /></div>}
                     </div>
                     {isActive && (
                       <div className="phase-actions">
@@ -1311,7 +1903,7 @@ function App() {
                         )}
                         {phase.id === 'onboarding' && vendor.onboarded && (
                           <div className="onboarded-status">
-                            <span className="onboarded-icon">✓</span>
+                            <HiCheckCircle className="onboarded-icon" />
                             <span>Vendor has been onboarded</span>
                             <button 
                               className="btn-danger"
@@ -1385,17 +1977,29 @@ function App() {
 
   const renderComplianceView = () => {
     const totalVendors = vendors.length + approvedVendors.length + flaggedVendors.length
-    const compliantCount = approvedVendors.length
+    // Risk bands: 0-33 = Low, 34-66 = Medium, 67-100 = High
+    const compliantCount = approvedVendors.length + vendors.filter(v => (v.risk || 0) <= 33).length
     const flaggedCount = flaggedVendors.length
-    const underReviewCount = vendors.filter(v => (v.risk || 0) >= 50 && (v.risk || 0) < 80).length
-    const nonCompliantCount = flaggedVendors.length + vendors.filter(v => (v.risk || 0) < 50).length
+    const underReviewCount = vendors.filter(v => (v.risk || 0) > 33 && (v.risk || 0) <= 66).length
+    const nonCompliantCount = flaggedVendors.length + vendors.filter(v => (v.risk || 0) > 66).length
     const complianceRate = totalVendors > 0 ? Math.round((compliantCount / totalVendors) * 100) : 0
 
     return (
-      <div className="compliance-view">
+    <div className="compliance-view">
+        {/* Premium Dashboard Sections */}
+        {renderExecutiveSummary()}
+        {renderComplianceStatus()}
+        
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '24px' }}>
+          {renderRiskSpeedometer()}
+          {renderComplianceTrend()}
+        </div>
+        
+        {renderComplianceRequirements()}
+
         <div className="compliance-header-section">
           <div>
-            <h2 className="page-title">Compliance Dashboard</h2>
+      <h2 className="page-title">Compliance Dashboard</h2>
             <p className="compliance-subtitle">Monitor and manage vendor compliance across all entities</p>
           </div>
           <div className={`compliance-badge-large ${complianceRate >= 80 ? 'compliant' : complianceRate >= 50 ? 'review' : 'non-compliant'}`}>
@@ -1403,80 +2007,76 @@ function App() {
           </div>
         </div>
 
-        <div className="compliance-overview">
-          <div className="card">
-            <h3 className="section-title">📊 Overall Compliance Status</h3>
-            <div className="compliance-stats">
+      <div className="compliance-overview">
+        <div className="card">
+            <h3 className="section-title"><MdBarChart style={{ marginRight: '8px', verticalAlign: 'middle' }} /> Overall Compliance Status</h3>
+          <div className="compliance-stats">
               <div className="stat-card stat-card-primary">
-                <div className="stat-icon">✅</div>
                 <div className="stat-value">{compliantCount}</div>
                 <div className="stat-label">Approved & Compliant</div>
                 <div className="stat-trend">+{approvedVendors.length} this session</div>
-              </div>
+            </div>
               <div className="stat-card stat-card-warning">
-                <div className="stat-icon">⏳</div>
                 <div className="stat-value">{underReviewCount}</div>
-                <div className="stat-label">Under Review</div>
+              <div className="stat-label">Under Review</div>
                 <div className="stat-trend">Pending assessment</div>
-              </div>
+            </div>
               <div className="stat-card stat-card-danger">
-                <div className="stat-icon">🚩</div>
                 <div className="stat-value">{flaggedCount}</div>
                 <div className="stat-label">Flagged Vendors</div>
                 <div className="stat-trend">Requires attention</div>
-              </div>
+            </div>
               <div className="stat-card stat-card-info">
-                <div className="stat-icon">📋</div>
                 <div className="stat-value">{totalVendors}</div>
                 <div className="stat-label">Total Entities</div>
                 <div className="stat-trend">{approvedVendors.length} approved, {flaggedVendors.length} flagged</div>
-              </div>
             </div>
           </div>
+        </div>
 
           <div className="compliance-grid">
-            <div className="card">
-              <h3 className="section-title">✅ Compliance Requirements</h3>
-              <div className="requirements-overview">
+        <div className="card">
+              <h3 className="section-title"><HiCheckCircle style={{ marginRight: '8px', verticalAlign: 'middle' }} /> Compliance Requirements</h3>
+          <div className="requirements-overview">
                 <div className="requirement-overview-item requirement-passed">
                   <div className="req-icon-wrapper">
-                    <span className="req-icon">✓</span>
+                    <HiCheckCircle className="req-icon" />
                   </div>
                   <div className="req-content">
-                    <span className="req-text">Business Registration Verification</span>
+              <span className="req-text">Business Registration Verification</span>
                     <span className="req-status-badge passed">Active</span>
-                  </div>
+            </div>
                 </div>
                 <div className="requirement-overview-item requirement-passed">
                   <div className="req-icon-wrapper">
-                    <span className="req-icon">✓</span>
+                    <HiCheckCircle className="req-icon" />
                   </div>
                   <div className="req-content">
-                    <span className="req-text">Address Validation</span>
+              <span className="req-text">Address Validation</span>
                     <span className="req-status-badge passed">Active</span>
-                  </div>
+            </div>
                 </div>
                 <div className="requirement-overview-item requirement-passed">
                   <div className="req-icon-wrapper">
-                    <span className="req-icon">✓</span>
+                    <HiCheckCircle className="req-icon" />
                   </div>
                   <div className="req-content">
-                    <span className="req-text">Sanctions & Watchlist Screening</span>
+              <span className="req-text">Sanctions & Watchlist Screening</span>
                     <span className="req-status-badge passed">Active</span>
-                  </div>
+            </div>
                 </div>
                 <div className="requirement-overview-item requirement-pending">
                   <div className="req-icon-wrapper">
-                    <span className="req-icon">⏳</span>
+                    <HiClock className="req-icon" />
                   </div>
                   <div className="req-content">
-                    <span className="req-text">Financial History Review</span>
+              <span className="req-text">Financial History Review</span>
                     <span className="req-status-badge pending">Pending</span>
-                  </div>
-                </div>
+            </div>
+            </div>
                 <div className="requirement-overview-item requirement-passed">
                   <div className="req-icon-wrapper">
-                    <span className="req-icon">✓</span>
+                    <HiCheckCircle className="req-icon" />
                   </div>
                   <div className="req-content">
                     <span className="req-text">AI-Powered Risk Assessment</span>
@@ -1485,17 +2085,17 @@ function App() {
                 </div>
                 <div className="requirement-overview-item requirement-passed">
                   <div className="req-icon-wrapper">
-                    <span className="req-icon">✓</span>
+                    <HiCheckCircle className="req-icon" />
                   </div>
                   <div className="req-content">
                     <span className="req-text">Documentation Verification</span>
                     <span className="req-status-badge passed">Active</span>
                   </div>
                 </div>
-              </div>
-            </div>
+          </div>
+        </div>
 
-            <div className="card">
+        <div className="card">
               <h3 className="section-title">📈 Compliance Metrics</h3>
               <div className="compliance-metrics-summary">
                 <div className="metric-summary-item">
@@ -1548,31 +2148,31 @@ function App() {
 
           <div className="card">
             <h3 className="section-title">🕒 Recent Compliance Activities</h3>
-            <div className="compliance-activities">
-              {activities
-                .filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload')
+          <div className="compliance-activities">
+            {activities
+              .filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload')
                 .slice(0, 15)
                 .map((activity, idx) => (
                   <div key={activity.id || activity.at || activity.t || idx} className="compliance-activity-item">
                     <div className="activity-indicator" />
                     <div className="activity-content">
-                      <div className="activity-time-small">
-                        {new Date(activity.at || activity.t || Date.now()).toLocaleString()}
-                      </div>
-                      <div className="activity-description">
-                        {formatActivityMessage(activity)}
-                      </div>
-                    </div>
+                  <div className="activity-time-small">
+                    {new Date(activity.at || activity.t || Date.now()).toLocaleString()}
                   </div>
-                ))}
-              {activities.filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload').length === 0 && (
-                <div className="empty-state">No compliance activities yet</div>
-              )}
-            </div>
+                  <div className="activity-description">
+                    {formatActivityMessage(activity)}
+                      </div>
+                  </div>
+                </div>
+              ))}
+            {activities.filter(a => a.type === 'score' || a.type === 'extract' || a.type === 'upload').length === 0 && (
+              <div className="empty-state">No compliance activities yet</div>
+            )}
           </div>
         </div>
       </div>
-    )
+    </div>
+  )
   }
 
   return (
@@ -1612,7 +2212,7 @@ function App() {
             onError={(e) => {
               // Fallback to text if image doesn't load
               e.currentTarget.style.display = 'none';
-              const fallback = e.currentTarget.nextElementSibling;
+              const fallback = e.currentTarget.nextElementSibling as HTMLElement;
               if (fallback) fallback.style.display = 'flex';
             }}
           />
@@ -1624,46 +2224,61 @@ function App() {
             className={`nav-item ${currentView === 'home' ? 'active' : ''}`}
             onClick={() => setCurrentView('home')}
           >
-            <span className="nav-icon">🏠</span>
+            <MdHome className="nav-icon" />
             {sidebarExpanded && <span className="nav-label">Home</span>}
           </div>
           <div 
             className={`nav-item ${currentView === 'approved' ? 'active' : ''}`}
             onClick={() => { setCurrentView('approved'); setSelectedApprovedVendor(null); }}
           >
-            <span className="nav-icon">✅</span>
+            <MdCheckCircle className="nav-icon" />
             {sidebarExpanded && <span className="nav-label">Approved {entityType === 'client' ? 'Clients' : 'Vendors'}</span>}
           </div>
           <div 
             className={`nav-item ${currentView === 'flagged' ? 'active' : ''}`}
             onClick={() => { setCurrentView('flagged'); setSelectedVendor(null); }}
           >
-            <span className="nav-icon">🚩</span>
+            <MdFlag className="nav-icon" />
             {sidebarExpanded && <span className="nav-label">Flagged {entityType === 'client' ? 'Clients' : 'Vendors'}</span>}
           </div>
           <div 
             className={`nav-item ${currentView === 'compliance' ? 'active' : ''}`}
             onClick={() => setCurrentView('compliance')}
           >
-            <span className="nav-icon">📁</span>
+            <MdFolder className="nav-icon" />
             {sidebarExpanded && <span className="nav-label">Compliance</span>}
           </div>
         </nav>
         <div className="sidebar-user">
-          <span className="user-icon">👤</span>
+          <MdPerson className="user-icon" />
           {sidebarExpanded && <span className="user-label">User</span>}
         </div>
       </aside>
 
       {/* Main Content */}
       <div className="main-content">
+        {/* Parallax Background Elements */}
+        <div className="parallax-bg">
+          <div className="parallax-circle"></div>
+          <div className="parallax-circle"></div>
+        </div>
+        
         {/* Top Bar */}
         <header className="topbar">
           <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
             <h1 className="app-title">IntelliBoard</h1>
+              <div className="live-status">
+                <span className="live-status-dot"></span>
+                <span>System Active - Real-time Monitoring</span>
+              </div>
+            </div>
             <p className="app-tagline">Smarter Vendor Onboarding. Transparent Risk. Instant Trust.</p>
           </div>
-          <div className="topbar-badge">Prototype @ HackUTD 2025</div>
+          <div className="gs-branding">
+            <div className="gs-brand-name">GOLDMAN SACHS</div>
+            <div className="gs-brand-subtitle">HackUTD 2025 Prototype</div>
+          </div>
         </header>
 
         {/* Content Area */}
@@ -1673,7 +2288,7 @@ function App() {
             {currentView === 'home' && renderHomeView()}
             {currentView === 'approved' && (selectedApprovedVendor ? renderApprovedVendorDetailView(selectedApprovedVendor) : renderApprovedVendorsView())}
             {currentView === 'flagged' && renderFlaggedVendorsView()}
-            {currentView === 'vendors' && (selectedVendor ? renderVendorDetailView(selectedVendor) : renderVendorsView())}
+            {currentView === 'vendors' && selectedVendor && renderVendorDetailView(selectedVendor)}
             {currentView === 'compliance' && renderComplianceView()}
           </div>
 
@@ -1710,7 +2325,7 @@ function App() {
                       </svg>
                       <div className="gauge-value">{riskResult.score}</div>
                     </div>
-                    <div className={`risk-band ${getRiskColor(riskResult.band)}`}>
+                    <div className={`risk-band ${getRiskColorClass(riskResult.band)}`}>
                       {riskResult.band}
                     </div>
                   </div>
