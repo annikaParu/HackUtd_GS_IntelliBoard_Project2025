@@ -94,11 +94,19 @@ function App() {
     const file = e.target.files?.[0]
     if (!file) return
 
+    // Validate file type
+    if (!file.type.includes('pdf') && !file.name.endsWith('.pdf')) {
+      setError('Please upload a PDF file')
+      return
+    }
+
     setLoading(true)
     setError(null)
     setUploadedFile(file)
 
     try {
+      console.log(`📤 Uploading file: ${file.name} (${file.size} bytes)`)
+      
       const formData = new FormData()
       formData.append('file', file)
 
@@ -109,12 +117,32 @@ function App() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}))
-        throw new Error(errorData.message || 'Extraction failed')
+        const errorMessage = errorData.message || errorData.error || 'Extraction failed'
+        console.error('❌ Upload failed:', errorMessage)
+        throw new Error(errorMessage)
       }
 
       const data = await res.json()
-      setExtracted(data.extracted)
-      setVendorName(data.extracted.businessName || 'Acme Technologies Inc')
+      console.log('✅ Extraction successful:', data)
+      
+      // Validate response structure
+      if (!data.extracted) {
+        throw new Error('Invalid response from server: missing extracted fields')
+      }
+
+      // Ensure all fields exist
+      const extracted = {
+        businessName: data.extracted.businessName || '',
+        registrationNo: data.extracted.registrationNo || '',
+        address: data.extracted.address || '',
+        entityType: data.extracted.entityType || ''
+      }
+
+      setExtracted(extracted)
+      setVendorName(extracted.businessName || 'Acme Technologies Inc')
+      
+      // Show success message
+      console.log('✅ Fields extracted:', extracted)
       
       // Refresh data
       const activityRes = await fetch(`${API_URL}/activity`)
@@ -123,8 +151,10 @@ function App() {
         setActivities(activityData)
       }
     } catch (error: any) {
-      console.error('Upload error:', error)
-      setError(error.message || 'Failed to extract document. Please try again.')
+      console.error('❌ Upload error:', error)
+      setError(error.message || 'Failed to extract document. Please ensure the file is a valid PDF with extractable text.')
+      setUploadedFile(null)
+      setExtracted(null)
     } finally {
       setLoading(false)
     }
@@ -1027,7 +1057,18 @@ function App() {
         onMouseLeave={() => setSidebarExpanded(false)}
       >
         <div className="sidebar-logo">
-          <span className="logo-text">GS</span>
+          <img 
+            src="/gs-logo.png" 
+            alt="Goldman Sachs" 
+            className="logo-image"
+            onError={(e) => {
+              // Fallback to text if image doesn't load
+              e.currentTarget.style.display = 'none';
+              const fallback = e.currentTarget.nextElementSibling;
+              if (fallback) fallback.style.display = 'flex';
+            }}
+          />
+          <span className="logo-text" style={{ display: 'none' }}>GS</span>
           {sidebarExpanded && <span className="logo-expanded">Goldman Sachs</span>}
         </div>
         <nav className="sidebar-nav">

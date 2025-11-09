@@ -82,7 +82,16 @@ app.post("/extract", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "No file provided" });
     }
 
+    console.log(`📄 Processing file: ${req.file.originalname} (${req.file.size} bytes, ${req.file.mimetype})`);
+
+    // Extract text from PDF
     const text = await extractTextFromUpload(req.file);
+    console.log(`✅ Extracted ${text.length} characters from PDF`);
+
+    if (!text || text.length < 10) {
+      throw new Error("Failed to extract meaningful text from document");
+    }
+
     const fileId = nanoid();
 
     addActivity({
@@ -93,25 +102,47 @@ app.post("/extract", upload.single("file"), async (req, res) => {
       at: new Date().toISOString()
     });
 
-    // Extract fields (works offline, escalates to OpenAI if available)
+    // Extract fields using LLM (works offline, escalates to OpenAI if available)
+    console.log(`🤖 Extracting fields using ${isOpenAIReady() ? "OpenAI" : "offline regex"}...`);
     const extracted = await llmExtractFieldsJSON(text);
+    console.log(`✅ Extracted fields:`, extracted);
+
+    // Validate extracted fields
+    if (!extracted || typeof extracted !== 'object') {
+      throw new Error("Failed to extract fields from document");
+    }
+
+    // Ensure all required fields exist
+    const normalizedExtracted = {
+      businessName: extracted.businessName || extracted.name || "",
+      registrationNo: extracted.registrationNo || extracted.registrationNumber || extracted.taxId || "",
+      address: extracted.address || "",
+      entityType: extracted.entityType || extracted.type || ""
+    };
 
     addActivity({
       actor: "system",
       type: "extract",
       vendorId: null,
-      payload: { fileId, extracted, method: isOpenAIReady() ? "openai" : "offline" },
+      payload: { 
+        fileId, 
+        extracted: normalizedExtracted, 
+        method: isOpenAIReady() ? "openai" : "offline" 
+      },
       at: new Date().toISOString()
     });
 
     res.json({
       fileId,
       filename: req.file.originalname,
-      extracted
+      extracted: normalizedExtracted
     });
   } catch (e) {
-    console.error("Extract error:", e);
-    res.status(500).json({ error: "extract_failed", message: e.message });
+    console.error("❌ Extract error:", e);
+    res.status(500).json({ 
+      error: "extract_failed", 
+      message: e.message || "Failed to extract document. Please ensure the file is a valid PDF with extractable text." 
+    });
   }
 });
 

@@ -18,23 +18,35 @@ export async function extractTextFromUpload(file) {
   if (mime.includes("pdf")) {
     try {
       // Use createRequire to import CommonJS module properly
-      const pdfParse = require("pdf-parse");
+      const pdfParseModule = require("pdf-parse");
       
-      // Ensure we have a function
-      if (typeof pdfParse !== 'function') {
-        throw new Error("pdf-parse module did not export a function");
+      // pdf-parse v2.4.5 uses a class-based API
+      // Get the PDFParse class
+      const PDFParse = pdfParseModule.PDFParse;
+      
+      if (!PDFParse || typeof PDFParse !== 'function') {
+        console.error("pdf-parse module structure:", Object.keys(pdfParseModule || {}));
+        throw new Error(`pdf-parse module did not export PDFParse class. Module type: ${typeof pdfParseModule}`);
       }
       
-      const data = await pdfParse(file.buffer);
-      const extractedText = (data.text || "").trim();
+      console.log("✅ pdf-parse class found, creating instance and extracting text...");
+      
+      // Create instance with buffer data
+      const parser = new PDFParse({ data: file.buffer });
+      
+      // Get text using the new v2 API
+      const result = await parser.getText();
+      const extractedText = (result.text || "").trim();
       
       if (!extractedText || extractedText.length < 10) {
-        throw new Error("PDF extraction yielded no text - may be image-based PDF");
+        throw new Error("PDF extraction yielded no text - may be image-based PDF or scanned document");
       }
       
+      console.log(`✅ Extracted ${extractedText.length} characters from PDF`);
       return extractedText;
     } catch (error) {
       console.error("PDF parsing error:", error);
+      console.error("Error stack:", error.stack);
       throw new Error(`Failed to extract text from PDF: ${error.message}`);
     }
   }
